@@ -537,6 +537,29 @@ def _build_figure_mapping_decision_example(template: dict[str, Any]) -> dict[str
     }
 
 
+def _maybe_validate_figure_mapping_decision(
+    *,
+    output_path: Path,
+    image_manifest: dict[str, Any],
+    files_result: dict[str, Any],
+    payload: dict[str, Any],
+    warnings: list[str],
+) -> None:
+    decision_path = output_path / "figure_mapping_decision.json"
+    if not decision_path.exists():
+        return
+    try:
+        decision_data = json.loads(decision_path.read_text(encoding="utf-8"))
+        validation = _validate_figure_mapping_decision(image_manifest, decision_data)
+        validation_path = output_path / "figure_mapping_validation.json"
+        with open(validation_path, "w", encoding="utf-8") as f:
+            json.dump(validation, f, ensure_ascii=False, indent=2)
+        files_result["figure_mapping_validation"] = str(validation_path)
+        payload["figure_mapping_validation"] = validation
+    except Exception as e:
+        warnings.append(f"Failed to validate figure mapping decision: {e}")
+
+
 def _validate_figure_mapping_decision(
     image_manifest: dict[str, Any],
     decision: dict[str, Any],
@@ -1082,6 +1105,13 @@ async def process_binary_file(
                 result["files"]["figure_mapping_decision_example"] = str(figure_mapping_example_path)
                 result["figure_slots"] = image_manifest.get("figure_slots", [])
                 result["figure_image_matches"] = image_manifest.get("figure_matches", [])
+                _maybe_validate_figure_mapping_decision(
+                    output_path=output_path,
+                    image_manifest=image_manifest,
+                    files_result=result["files"],
+                    payload=result,
+                    warnings=warnings,
+                )
             figure_refs = _extract_figure_references(result.get("markdown_content", ""))
             result["figure_reference_count"] = len(figure_refs)
             result["figure_references"] = figure_refs
@@ -1267,19 +1297,13 @@ async def process_binary_file(
             result_payload["image_manifest"] = image_manifest
             result_payload["figure_slots"] = image_manifest.get("figure_slots", [])
             result_payload["figure_image_matches"] = image_manifest.get("figure_matches", [])
-
-            decision_path = output_path / "figure_mapping_decision.json"
-            if decision_path.exists():
-                try:
-                    decision_data = json.loads(decision_path.read_text(encoding="utf-8"))
-                    validation = _validate_figure_mapping_decision(image_manifest, decision_data)
-                    validation_path = output_path / "figure_mapping_validation.json"
-                    with open(validation_path, "w", encoding="utf-8") as f:
-                        json.dump(validation, f, ensure_ascii=False, indent=2)
-                    files_result["figure_mapping_validation"] = str(validation_path)
-                    result_payload["figure_mapping_validation"] = validation
-                except Exception as e:
-                    warnings.append(f"Failed to validate figure mapping decision: {e}")
+            _maybe_validate_figure_mapping_decision(
+                output_path=output_path,
+                image_manifest=image_manifest,
+                files_result=files_result,
+                payload=result_payload,
+                warnings=warnings,
+            )
         figure_refs = _extract_figure_references(merged_md)
         result_payload["figure_reference_count"] = len(figure_refs)
         result_payload["figure_references"] = figure_refs

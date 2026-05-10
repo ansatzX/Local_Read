@@ -1005,6 +1005,99 @@ class TestProcessBinaryFileAdditiveContract:
         assert any("OCR is likely required" in warning for warning in result["warnings"])
 
     @pytest.mark.asyncio
+    async def test_process_binary_file_single_chunk_validates_figure_mapping_decision(self, monkeypatch, tmp_path):
+        from local_read_mcp.server import app as server_app
+        from local_read_mcp.segmenter import Chunk
+
+        test_file = tmp_path / "sample.pdf"
+        test_file.write_text("fake pdf", encoding="utf-8")
+        output_dir = tmp_path / "out"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        images_dir = output_dir / "images"
+        images_dir.mkdir(parents=True, exist_ok=True)
+        image_path = images_dir / "page000_img0000_raster.png"
+        image_path.write_bytes(b"img-a")
+
+        # Intentionally invalid ids; validation should still run and report issues.
+        (output_dir / "figure_mapping_decision.json").write_text(
+            json.dumps(
+                {
+                    "version": "1",
+                    "entries": [
+                        {
+                            "slot_id": "slot-does-not-exist",
+                            "selected_image_id": "img-does-not-exist",
+                            "decision_status": "matched",
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        class FakeBackend:
+            name = "Simple"
+            warning = None
+
+            def supports_format(self, format_name):
+                return True
+
+            def process(self, file_path, format_name, **kwargs):
+                return {
+                    "source": {"path": str(file_path), "format": format_name, "page_count": 1},
+                    "metadata": {},
+                    "blocks": {},
+                    "reading_order": [],
+                }
+
+        class FakeRegistry:
+            def select_best(self, format_name=None):
+                return FakeBackend()
+
+            def get(self, backend_type):
+                return FakeBackend()
+
+        class FakeOutputManager:
+            def create_output_dir(self, file_path):
+                return output_dir
+
+        def fake_process_and_save(**kwargs):
+            return {
+                "title": "single",
+                "phys_start": 0,
+                "phys_end": 0,
+                "intermediate_path": output_dir / "intermediate.json",
+                "markdown_path": output_dir / "output.md",
+                "index_path": output_dir / "index.json",
+                "intermediate": {"source": {"page_count": 1}, "metadata": {}, "blocks": {}, "reading_order": []},
+                "markdown_content": "Figure 1: Test",
+                "image_files": [image_path],
+                "warnings": [],
+            }
+
+        monkeypatch.setattr(server_app, "get_registry", lambda: FakeRegistry())
+        monkeypatch.setattr(server_app, "OutputManager", FakeOutputManager)
+        monkeypatch.setattr(
+            server_app,
+            "plan_chunks",
+            lambda **kwargs: [Chunk(phys_start=0, phys_end=0, title="single")],
+        )
+        monkeypatch.setattr(server_app, "process_and_save", fake_process_and_save)
+
+        result = await server_app.process_binary_file.fn(
+            file_path=str(test_file),
+            format="pdf",
+            extract_images=True,
+        )
+
+        assert result["success"] is True
+        assert "figure_mapping_validation" in result
+        assert Path(result["files"]["figure_mapping_validation"]).exists()
+        validation = json.loads(Path(result["files"]["figure_mapping_validation"]).read_text(encoding="utf-8"))
+        assert validation["valid"] is False
+        assert validation["issues"]
+
+    @pytest.mark.asyncio
     async def test_process_binary_file_preserves_converter_metadata_quality(self, monkeypatch, tmp_path):
         from local_read_mcp.server import app as server_app
         from local_read_mcp.segmenter import Chunk
