@@ -20,7 +20,7 @@ from fastmcp import FastMCP
 
 from ..backends import BackendType, get_registry
 from ..config import get_config as _get_config
-from ..converters.pdf import evaluate_pdf_text_quality
+from ..converters.pdf import evaluate_pdf_text_quality, get_pdf_quality_warning
 from ..output_manager import OutputManager
 from ..index_generator import IndexGenerator
 from ..markdown_converter import MarkdownConverter
@@ -340,40 +340,91 @@ async def process_binary_file(
         payload.setdefault("toc_confidence", additive_fields["toc_confidence"])
         payload.setdefault("toc_resolution_mode", additive_fields["toc_resolution_mode"])
 
-    def _quality_warning_for_state(state: str) -> str | None:
-        if state == "warn":
-            return "Extracted PDF text quality is degraded; review output before downstream use."
-        if state == "unreadable":
-            return "Extracted PDF text appears unreadable; OCR is likely required."
-        return None
+    def _extract_quality_text_from_intermediate(intermediate: Any) -> tuple[str, bool]:
+        """Prefer raw extracted block text from intermediate output for quality scoring."""
+        if not isinstance(intermediate, dict):
+            return "", False
 
-    def _apply_pdf_quality(payload: dict[str, Any], page_count: int | None) -> None:
+        blocks = intermediate.get("blocks")
+        if not isinstance(blocks, dict):
+            return "", True
+
+        parts: list[str] = []
+        reading_order = intermediate.get("reading_order")
+        if isinstance(reading_order, list):
+            for block_id in reading_order:
+                block = blocks.get(block_id)
+                if not isinstance(block, dict):
+                    continue
+                content = block.get("content")
+                if isinstance(content, str):
+                    parts.append(content)
+        else:
+            for block in blocks.values():
+                if not isinstance(block, dict):
+                    continue
+                content = block.get("content")
+                if isinstance(content, str):
+                    parts.append(content)
+
+        return "\n".join(parts), True
+
+    def _apply_pdf_quality(
+        payload: dict[str, Any],
+        page_count: int | None,
+        *,
+        intermediate: dict[str, Any] | None = None,
+        fallback_text: str = "",
+    ) -> None:
         if format != "pdf":
             return
 
         existing_state = payload.get("quality_state")
         existing_metrics = payload.get("quality_metrics")
-        has_existing = (
-            existing_state in {"ok", "warn", "unreadable"}
-            and isinstance(existing_metrics, dict)
-            and (
-                bool(existing_metrics)
-                or existing_state == "ok"
-            )
-        )
-
-        if has_existing:
-            payload["requires_ocr"] = existing_state == "unreadable"
-            warning_text = _quality_warning_for_state(existing_state)
+        if existing_state in {"ok", "warn", "unreadable"}:
+            if isinstance(existing_metrics, dict):
+                payload["quality_metrics"] = existing_metrics
+            current_requires_ocr = payload.get("requires_ocr")
+            if isinstance(current_requires_ocr, bool):
+                payload["requires_ocr"] = current_requires_ocr
+            else:
+                payload["requires_ocr"] = existing_state == "unreadable"
+            warning_text = payload.get("quality_warning")
+            if not isinstance(warning_text, str) or not warning_text:
+                warning_text = get_pdf_quality_warning(existing_state)
         else:
-            quality = evaluate_pdf_text_quality(
-                str(payload.get("markdown_content", "")),
-                page_count,
+            intermediate_obj = intermediate if isinstance(intermediate, dict) else payload.get("intermediate")
+            metadata = intermediate_obj.get("metadata", {}) if isinstance(intermediate_obj, dict) else {}
+            metadata_state = metadata.get("quality_state") if isinstance(metadata, dict) else None
+            metadata_metrics = metadata.get("quality_metrics") if isinstance(metadata, dict) else None
+            metadata_requires_ocr = metadata.get("requires_ocr") if isinstance(metadata, dict) else None
+            metadata_warning = metadata.get("quality_warning") if isinstance(metadata, dict) else None
+            metadata_has_quality = (
+                metadata_state in {"ok", "warn", "unreadable"}
+                or isinstance(metadata_metrics, dict)
+                or isinstance(metadata_requires_ocr, bool)
             )
-            payload["quality_state"] = quality["quality_state"]
-            payload["quality_metrics"] = quality["quality_metrics"]
-            payload["requires_ocr"] = quality["requires_ocr"]
-            warning_text = quality.get("quality_warning")
+
+            if metadata_has_quality:
+                if metadata_state in {"ok", "warn", "unreadable"}:
+                    payload["quality_state"] = metadata_state
+                if isinstance(metadata_metrics, dict):
+                    payload["quality_metrics"] = metadata_metrics
+                if isinstance(metadata_requires_ocr, bool):
+                    payload["requires_ocr"] = metadata_requires_ocr
+                elif metadata_state in {"ok", "warn", "unreadable"}:
+                    payload["requires_ocr"] = metadata_state == "unreadable"
+                warning_text = metadata_warning if isinstance(metadata_warning, str) and metadata_warning else None
+                if not warning_text and metadata_state in {"warn", "unreadable"}:
+                    warning_text = get_pdf_quality_warning(metadata_state)
+            else:
+                raw_text, has_raw_source = _extract_quality_text_from_intermediate(intermediate_obj)
+                quality_text = raw_text if has_raw_source else str(fallback_text or "")
+                quality = evaluate_pdf_text_quality(quality_text, page_count)
+                payload["quality_state"] = quality["quality_state"]
+                payload["quality_metrics"] = quality["quality_metrics"]
+                payload["requires_ocr"] = quality["requires_ocr"]
+                warning_text = quality.get("quality_warning")
 
         if warning_text:
             existing_warnings = payload.get("warnings")
@@ -469,7 +520,12 @@ async def process_binary_file(
                     page_count = max(1, int(result.get("phys_end", 0)) - int(result.get("phys_start", 0)) + 1)
                 except Exception:
                     page_count = 1
-            _apply_pdf_quality(result, page_count)
+            _apply_pdf_quality(
+                result,
+                page_count,
+                intermediate=intermediate if isinstance(intermediate, dict) else None,
+                fallback_text=result.get("markdown_content", ""),
+            )
             _apply_additive_defaults(result)
             return result
 
@@ -608,7 +664,12 @@ async def process_binary_file(
         if isinstance(merged_intermediate, dict):
             merged_page_count = merged_intermediate.get("source", {}).get("page_count")
         result_payload["markdown_content"] = merged_md
-        _apply_pdf_quality(result_payload, merged_page_count)
+        _apply_pdf_quality(
+            result_payload,
+            merged_page_count,
+            intermediate=merged_intermediate if isinstance(merged_intermediate, dict) else None,
+            fallback_text=merged_md,
+        )
         result_payload.pop("markdown_content", None)
         _apply_additive_defaults(result_payload)
         if image_metadata_all:

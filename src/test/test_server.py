@@ -542,7 +542,7 @@ class TestProcessBinaryFileAdditiveContract:
                 "index_path": tmp_path / "index.json",
                 "markdown_content": "content",
                 "quality_state": "unreadable",
-                "quality_metrics": {"control_char_ratio": 0.3},
+                "quality_metrics": {},
                 "requires_ocr": True,
                 "toc_confidence": 0.8,
                 "toc_resolution_mode": "heuristic",
@@ -560,12 +560,147 @@ class TestProcessBinaryFileAdditiveContract:
         result = await server_app.process_binary_file.fn(file_path=str(test_file), format="pdf")
 
         assert result["quality_state"] == "unreadable"
-        assert result["quality_metrics"] == {"control_char_ratio": 0.3}
+        assert result["quality_metrics"] == {}
         assert result["requires_ocr"] is True
         assert result["toc_confidence"] == 0.8
         assert result["toc_resolution_mode"] == "heuristic"
         assert "backend warning" in result["warnings"]
         assert any("OCR is likely required" in warning for warning in result["warnings"])
+
+    @pytest.mark.asyncio
+    async def test_process_binary_file_preserves_converter_metadata_quality(self, monkeypatch, tmp_path):
+        from local_read_mcp.server import app as server_app
+        from local_read_mcp.segmenter import Chunk
+
+        test_file = tmp_path / "sample.pdf"
+        test_file.write_text("fake pdf", encoding="utf-8")
+
+        class FakeBackend:
+            name = "Simple"
+            warning = None
+
+            def supports_format(self, format_name):
+                return True
+
+            def process(self, file_path, format_name, **kwargs):
+                return {
+                    "source": {"path": str(file_path), "format": format_name, "page_count": 1},
+                    "metadata": {},
+                    "blocks": {},
+                    "reading_order": [],
+                }
+
+        class FakeRegistry:
+            def select_best(self, format_name=None):
+                return FakeBackend()
+
+            def get(self, backend_type):
+                return FakeBackend()
+
+        def fake_process_and_save(**kwargs):
+            return {
+                "title": "single",
+                "phys_start": 0,
+                "phys_end": 0,
+                "intermediate_path": tmp_path / "intermediate.json",
+                "markdown_path": tmp_path / "output.md",
+                "index_path": tmp_path / "index.json",
+                "intermediate": {
+                    "source": {"page_count": 1},
+                    "metadata": {
+                        "quality_state": "unreadable",
+                        "quality_metrics": {},
+                        "requires_ocr": True,
+                    },
+                    "blocks": {
+                        "block_00000000": {
+                            "type": "text",
+                            "page": 1,
+                            "content": "Readable fallback text that should not be rescored.",
+                        }
+                    },
+                    "reading_order": ["block_00000000"],
+                },
+                "markdown_content": "Readable markdown fallback text.",
+                "warnings": [],
+            }
+
+        monkeypatch.setattr(server_app, "get_registry", lambda: FakeRegistry())
+        monkeypatch.setattr(
+            server_app,
+            "plan_chunks",
+            lambda **kwargs: [Chunk(phys_start=0, phys_end=0, title="single")],
+        )
+        monkeypatch.setattr(server_app, "process_and_save", fake_process_and_save)
+
+        result = await server_app.process_binary_file.fn(file_path=str(test_file), format="pdf")
+
+        assert result["quality_state"] == "unreadable"
+        assert result["quality_metrics"] == {}
+        assert result["requires_ocr"] is True
+        assert any("OCR is likely required" in warning for warning in result["warnings"])
+
+    @pytest.mark.asyncio
+    async def test_process_binary_file_marks_empty_extracted_text_unreadable(self, monkeypatch, tmp_path):
+        from local_read_mcp.server import app as server_app
+        from local_read_mcp.segmenter import Chunk
+
+        test_file = tmp_path / "sample.pdf"
+        test_file.write_text("fake pdf", encoding="utf-8")
+
+        class FakeBackend:
+            name = "Simple"
+            warning = None
+
+            def supports_format(self, format_name):
+                return True
+
+            def process(self, file_path, format_name, **kwargs):
+                return {
+                    "source": {"path": str(file_path), "format": format_name, "page_count": 1},
+                    "metadata": {},
+                    "blocks": {},
+                    "reading_order": [],
+                }
+
+        class FakeRegistry:
+            def select_best(self, format_name=None):
+                return FakeBackend()
+
+            def get(self, backend_type):
+                return FakeBackend()
+
+        def fake_process_and_save(**kwargs):
+            return {
+                "title": "single",
+                "phys_start": 0,
+                "phys_end": 0,
+                "intermediate_path": tmp_path / "intermediate.json",
+                "markdown_path": tmp_path / "output.md",
+                "index_path": tmp_path / "index.json",
+                "intermediate": {
+                    "source": {"page_count": 1},
+                    "metadata": {},
+                    "blocks": {},
+                    "reading_order": [],
+                },
+                # Markdown scaffolding should not drive quality when raw extracted text exists.
+                "markdown_content": "# Title\n\n## Section\n\nNo extracted blocks.",
+                "warnings": [],
+            }
+
+        monkeypatch.setattr(server_app, "get_registry", lambda: FakeRegistry())
+        monkeypatch.setattr(
+            server_app,
+            "plan_chunks",
+            lambda **kwargs: [Chunk(phys_start=0, phys_end=0, title="single")],
+        )
+        monkeypatch.setattr(server_app, "process_and_save", fake_process_and_save)
+
+        result = await server_app.process_binary_file.fn(file_path=str(test_file), format="pdf")
+
+        assert result["quality_state"] == "unreadable"
+        assert result["requires_ocr"] is True
 
     @pytest.mark.asyncio
     async def test_process_binary_file_adds_quality_warning_when_unreadable(self, monkeypatch, tmp_path):
@@ -622,7 +757,7 @@ class TestProcessBinaryFileAdditiveContract:
 
         assert result["quality_state"] == "unreadable"
         assert result["requires_ocr"] is True
-        assert result["quality_metrics"]["control_char_ratio"] >= 0.3
+        assert result["quality_metrics"]["printable_ratio"] == 0.0
         assert any("OCR is likely required" in warning for warning in result["warnings"])
 
     @pytest.mark.asyncio

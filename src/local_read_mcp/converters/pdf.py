@@ -15,6 +15,17 @@ from .section_extractor import extract_sections_from_markdown
 from .latex_fixer import fix_latex_formulas
 
 
+PDF_QUALITY_WARNING_BY_STATE: dict[str, str] = {
+    "warn": "Extracted PDF text quality is degraded; review output before downstream use.",
+    "unreadable": "Extracted PDF text appears unreadable; OCR is likely required.",
+}
+
+
+def get_pdf_quality_warning(state: str) -> str | None:
+    """Return canonical warning text for a computed PDF quality state."""
+    return PDF_QUALITY_WARNING_BY_STATE.get(state)
+
+
 def evaluate_pdf_text_quality(
     text_content: str,
     page_count: Optional[int],
@@ -35,7 +46,7 @@ def evaluate_pdf_text_quality(
             "quality_state": "unreadable",
             "quality_metrics": metrics,
             "requires_ocr": True,
-            "quality_warning": "Extracted PDF text is empty; OCR is likely required.",
+            "quality_warning": get_pdf_quality_warning("unreadable"),
         }
 
     allowed_whitespace = {"\n", "\r", "\t"}
@@ -66,7 +77,7 @@ def evaluate_pdf_text_quality(
         or avg_readable_chars_per_page < 40
     ):
         state = "unreadable"
-        warning = "Extracted PDF text appears unreadable; OCR is likely required."
+        warning = get_pdf_quality_warning(state)
     elif (
         control_char_ratio >= 0.12
         or printable_ratio < 0.85
@@ -74,7 +85,7 @@ def evaluate_pdf_text_quality(
         or avg_readable_chars_per_page < 180
     ):
         state = "warn"
-        warning = "Extracted PDF text quality is degraded; review output before downstream use."
+        warning = get_pdf_quality_warning(state)
 
     return {
         "quality_state": state,
