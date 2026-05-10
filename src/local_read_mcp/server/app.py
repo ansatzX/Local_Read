@@ -222,6 +222,12 @@ async def process_binary_file(
     start_page: int | None = None,
     end_page: int | None = None,
     page_batch_size: int = 64,
+    page_range_mode: str = "physical",
+    strict_page_range: bool = False,
+    enable_toc_auto_fallback: bool = False,
+    toc_confidence_threshold: float = 0.55,
+    fail_on_unreadable: bool = False,
+    skip_quality_check: bool = False,
     # PDF-specific
     extract_images: bool | None = None,
     render_images: bool = False,
@@ -250,6 +256,12 @@ async def process_binary_file(
         start_page: 0-based start page.
         end_page: 0-based end page.
         page_batch_size: Pages per batch (default: 64).
+        page_range_mode: Page interpretation mode. Default: physical.
+        strict_page_range: Fail when page range cannot be resolved exactly.
+        enable_toc_auto_fallback: Enable TOC auto fallback behavior.
+        toc_confidence_threshold: TOC confidence threshold.
+        fail_on_unreadable: Fail when unreadable segments are encountered.
+        skip_quality_check: Skip quality checks in processing pipeline.
         extract_images: Extract images from PDF (auto if vision configured).
         render_images: Render PDF pages to images.
         render_dpi: Render DPI (default: 200).
@@ -283,14 +295,49 @@ async def process_binary_file(
     if backend_instance is None:
         backend_instance = registry.get(BackendType.SIMPLE)
 
+    warnings: list[str] = []
+    if backend_instance.warning:
+        warnings.append(backend_instance.warning)
+
     if not backend_instance.supports_format(format):
         raise ValueError(
             f"Backend '{backend_instance.name}' does not support format '{format}'"
         )
 
-    warnings = []
-    if backend_instance.warning:
-        warnings.append(backend_instance.warning)
+    if (
+        page_range_mode != "physical"
+        or strict_page_range
+        or enable_toc_auto_fallback
+        or toc_confidence_threshold != 0.55
+        or fail_on_unreadable
+        or skip_quality_check
+    ):
+        warnings.append(
+            "Reliability controls are accepted but enforced in later phases; current behavior remains additive-only."
+        )
+
+    additive_fields: dict[str, Any] = {
+        "warnings": warnings,
+        "quality_state": "not_evaluated",
+        "quality_metrics": {},
+        "requires_ocr": False,
+        "toc_confidence": None,
+        "toc_resolution_mode": "not_evaluated",
+    }
+
+    def _apply_additive_defaults(payload: dict[str, Any]) -> None:
+        existing_warnings = payload.get("warnings")
+        if isinstance(existing_warnings, list):
+            for warning in warnings:
+                if warning not in existing_warnings:
+                    existing_warnings.append(warning)
+        else:
+            payload["warnings"] = list(warnings)
+        payload.setdefault("quality_state", additive_fields["quality_state"])
+        payload.setdefault("quality_metrics", additive_fields["quality_metrics"])
+        payload.setdefault("requires_ocr", additive_fields["requires_ocr"])
+        payload.setdefault("toc_confidence", additive_fields["toc_confidence"])
+        payload.setdefault("toc_resolution_mode", additive_fields["toc_resolution_mode"])
 
     # ── 3. Plan chunks (segmenter integration) ───────────────────
     chunks = plan_chunks(
@@ -369,8 +416,7 @@ async def process_binary_file(
             figure_refs = _extract_figure_references(result.get("markdown_content", ""))
             result["figure_reference_count"] = len(figure_refs)
             result["figure_references"] = figure_refs
-            if warnings:
-                result["warnings"] = warnings
+            _apply_additive_defaults(result)
             return result
 
         # Multi-chunk: process each chunk independently, then merge
@@ -503,8 +549,8 @@ async def process_binary_file(
             "backend_used": backend_instance.name,
             "chunk_count": len(chunks),
             "files": files_result,
-            "warnings": warnings,
         }
+        _apply_additive_defaults(result_payload)
         if image_metadata_all:
             result_payload["image_count"] = len(image_metadata_all)
             result_payload["image_metadata"] = image_metadata_all
@@ -519,6 +565,12 @@ async def process_binary_file(
             "success": False,
             "error": str(e),
             "backend_used": backend_instance.name,
+            "warnings": warnings if "warnings" in locals() else [],
+            "quality_state": "not_evaluated",
+            "quality_metrics": {},
+            "requires_ocr": False,
+            "toc_confidence": None,
+            "toc_resolution_mode": "not_evaluated",
         }
 
 

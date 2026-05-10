@@ -364,3 +364,252 @@ class TestProcessBinaryFileMultiChunk:
         ]
         assert all(p.is_symlink() for p in linked)
         assert all(p.resolve().parent.name == "images" for p in linked)
+
+
+class TestProcessBinaryFileAdditiveContract:
+    """Tests for additive API params and response keys."""
+
+    @pytest.mark.asyncio
+    async def test_process_binary_file_accepts_new_request_params(self, monkeypatch, tmp_path):
+        from local_read_mcp.server import app as server_app
+        from local_read_mcp.segmenter import Chunk
+
+        called = {}
+        test_file = tmp_path / "sample.pdf"
+        test_file.write_text("fake pdf", encoding="utf-8")
+
+        class FakeBackend:
+            name = "Simple"
+            warning = None
+
+            def supports_format(self, format_name):
+                return True
+
+            def process(self, file_path, format_name, **kwargs):
+                called["invoked"] = True
+                called.update(kwargs)
+                return {
+                    "source": {"path": str(file_path), "format": format_name, "page_count": 1},
+                    "metadata": {},
+                    "blocks": {
+                        "block_00000000": {
+                            "type": "text",
+                            "page": 1,
+                            "bbox": [0, 0, 612, 792],
+                            "confidence": 0.9,
+                            "content": "content",
+                        }
+                    },
+                    "reading_order": ["block_00000000"],
+                }
+
+        class FakeRegistry:
+            def select_best(self, format_name=None):
+                return FakeBackend()
+
+            def get(self, backend_type):
+                return FakeBackend()
+
+        monkeypatch.setattr(server_app, "get_registry", lambda: FakeRegistry())
+        monkeypatch.setattr(
+            server_app,
+            "plan_chunks",
+            lambda **kwargs: [Chunk(phys_start=0, phys_end=0, title="single")],
+        )
+
+        result = await server_app.process_binary_file.fn(
+            file_path=str(test_file),
+            format="pdf",
+            page_range_mode="physical",
+            strict_page_range=False,
+            enable_toc_auto_fallback=False,
+            toc_confidence_threshold=0.55,
+            fail_on_unreadable=False,
+            skip_quality_check=False,
+        )
+
+        assert result["success"] is True
+        assert called["invoked"] is True
+        assert not any("enforced in later phases" in warning for warning in result["warnings"])
+
+    @pytest.mark.asyncio
+    async def test_process_binary_file_returns_additive_response_fields(self, monkeypatch, tmp_path):
+        from local_read_mcp.server import app as server_app
+        from local_read_mcp.segmenter import Chunk
+
+        test_file = tmp_path / "sample.pdf"
+        test_file.write_text("fake pdf", encoding="utf-8")
+
+        class FakeBackend:
+            name = "Simple"
+            warning = None
+
+            def supports_format(self, format_name):
+                return True
+
+            def process(self, file_path, format_name, **kwargs):
+                return {
+                    "source": {"path": str(file_path), "format": format_name, "page_count": 1},
+                    "metadata": {},
+                    "blocks": {
+                        "block_00000000": {
+                            "type": "text",
+                            "page": 1,
+                            "bbox": [0, 0, 612, 792],
+                            "confidence": 0.9,
+                            "content": "content",
+                        }
+                    },
+                    "reading_order": ["block_00000000"],
+                }
+
+        class FakeRegistry:
+            def select_best(self, format_name=None):
+                return FakeBackend()
+
+            def get(self, backend_type):
+                return FakeBackend()
+
+        monkeypatch.setattr(server_app, "get_registry", lambda: FakeRegistry())
+        monkeypatch.setattr(
+            server_app,
+            "plan_chunks",
+            lambda **kwargs: [Chunk(phys_start=0, phys_end=0, title="single")],
+        )
+
+        result = await server_app.process_binary_file.fn(
+            file_path=str(test_file),
+            format="pdf",
+        )
+
+        assert result["success"] is True
+        assert "warnings" in result
+        assert "quality_state" in result
+        assert "quality_metrics" in result
+        assert "requires_ocr" in result
+        assert "toc_confidence" in result
+        assert "toc_resolution_mode" in result
+        assert isinstance(result["warnings"], list)
+        assert result["quality_state"] == "not_evaluated"
+        assert result["quality_metrics"] == {}
+        assert result["requires_ocr"] is False
+        assert result["toc_confidence"] is None
+        assert result["toc_resolution_mode"] == "not_evaluated"
+
+    @pytest.mark.asyncio
+    async def test_process_binary_file_preserves_existing_additive_fields(self, monkeypatch, tmp_path):
+        from local_read_mcp.server import app as server_app
+        from local_read_mcp.segmenter import Chunk
+
+        test_file = tmp_path / "sample.pdf"
+        test_file.write_text("fake pdf", encoding="utf-8")
+
+        class FakeBackend:
+            name = "Simple"
+            warning = None
+
+            def supports_format(self, format_name):
+                return True
+
+            def process(self, file_path, format_name, **kwargs):
+                return {
+                    "source": {"path": str(file_path), "format": format_name, "page_count": 1},
+                    "metadata": {},
+                    "blocks": {},
+                    "reading_order": [],
+                }
+
+        class FakeRegistry:
+            def select_best(self, format_name=None):
+                return FakeBackend()
+
+            def get(self, backend_type):
+                return FakeBackend()
+
+        def fake_process_and_save(**kwargs):
+            return {
+                "title": "single",
+                "phys_start": 0,
+                "phys_end": 0,
+                "intermediate_path": tmp_path / "intermediate.json",
+                "markdown_path": tmp_path / "output.md",
+                "index_path": tmp_path / "index.json",
+                "markdown_content": "content",
+                "quality_state": "warn",
+                "quality_metrics": {"control_char_ratio": 0.3},
+                "requires_ocr": True,
+                "toc_confidence": 0.8,
+                "toc_resolution_mode": "heuristic",
+                "warnings": ["backend warning"],
+            }
+
+        monkeypatch.setattr(server_app, "get_registry", lambda: FakeRegistry())
+        monkeypatch.setattr(
+            server_app,
+            "plan_chunks",
+            lambda **kwargs: [Chunk(phys_start=0, phys_end=0, title="single")],
+        )
+        monkeypatch.setattr(server_app, "process_and_save", fake_process_and_save)
+
+        result = await server_app.process_binary_file.fn(file_path=str(test_file), format="pdf")
+
+        assert result["quality_state"] == "warn"
+        assert result["quality_metrics"] == {"control_char_ratio": 0.3}
+        assert result["requires_ocr"] is True
+        assert result["toc_confidence"] == 0.8
+        assert result["toc_resolution_mode"] == "heuristic"
+        assert "backend warning" in result["warnings"]
+
+    @pytest.mark.asyncio
+    async def test_process_binary_file_warns_when_non_default_reliability_controls_passed(self, monkeypatch, tmp_path):
+        from local_read_mcp.server import app as server_app
+        from local_read_mcp.segmenter import Chunk
+
+        test_file = tmp_path / "sample.pdf"
+        test_file.write_text("fake pdf", encoding="utf-8")
+
+        class FakeBackend:
+            name = "Simple"
+            warning = None
+
+            def supports_format(self, format_name):
+                return True
+
+            def process(self, file_path, format_name, **kwargs):
+                return {
+                    "source": {"path": str(file_path), "format": format_name, "page_count": 1},
+                    "metadata": {},
+                    "blocks": {
+                        "block_00000000": {
+                            "type": "text",
+                            "page": 1,
+                            "bbox": [0, 0, 612, 792],
+                            "confidence": 0.9,
+                            "content": "content",
+                        }
+                    },
+                    "reading_order": ["block_00000000"],
+                }
+
+        class FakeRegistry:
+            def select_best(self, format_name=None):
+                return FakeBackend()
+
+            def get(self, backend_type):
+                return FakeBackend()
+
+        monkeypatch.setattr(server_app, "get_registry", lambda: FakeRegistry())
+        monkeypatch.setattr(
+            server_app,
+            "plan_chunks",
+            lambda **kwargs: [Chunk(phys_start=0, phys_end=0, title="single")],
+        )
+
+        result = await server_app.process_binary_file.fn(
+            file_path=str(test_file),
+            format="pdf",
+            strict_page_range=True,
+        )
+
+        assert result["success"] is True
+        assert any("enforced in later phases" in warning for warning in result["warnings"])
