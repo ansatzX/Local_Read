@@ -502,6 +502,8 @@ class TestProcessBinaryFileMultiChunk:
         assert manifest["totals"]["unique_images"] == 2
         assert len(manifest["figure_slots"]) >= 1
         assert manifest["figure_matches"][0]["candidates"]
+        assert manifest["figure_matches"][0]["primary_candidate_id"] is not None
+        assert isinstance(manifest["figure_matches"][0]["candidate_cluster_ids"], list)
 
     def test_image_manifest_builds_near_duplicate_groups_from_phash(self, monkeypatch, tmp_path):
         from local_read_mcp.server import app as app_module
@@ -583,6 +585,10 @@ class TestProcessBinaryFileMultiChunk:
         first = candidates[0]
         assert first["near_duplicate_group"] is not None
         assert len(first["near_duplicate_group"]["member_ids"]) == 2
+        assert manifest["figure_matches"][0]["primary_candidate_id"] is not None
+        assert manifest["figure_matches"][0]["candidate_cluster_ids"] == [
+            first["near_duplicate_group"]["group_id"]
+        ]
 
 
 class TestProcessBinaryFileAdditiveContract:

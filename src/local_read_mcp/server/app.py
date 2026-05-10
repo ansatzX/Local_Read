@@ -434,12 +434,22 @@ def _build_image_manifest(image_metadata: list[dict[str, Any]], markdown: str) -
             for s, c in ranked[:3]
             if s > 0
         ]
+        primary_candidate_id = top[0]["canonical_image_id"] if top else None
+        cluster_ids: list[str] = []
+        for candidate in top:
+            group = candidate.get("near_duplicate_group")
+            if isinstance(group, dict):
+                gid = group.get("group_id")
+                if isinstance(gid, str) and gid not in cluster_ids:
+                    cluster_ids.append(gid)
         figure_matches.append(
             {
                 "slot_id": slot["slot_id"],
                 "figure_number": slot["figure_number"],
                 "caption": slot.get("caption", ""),
                 "page_hint": slot.get("page_hint"),
+                "primary_candidate_id": primary_candidate_id,
+                "candidate_cluster_ids": cluster_ids,
                 "candidates": top,
             }
         )
