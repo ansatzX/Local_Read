@@ -671,6 +671,90 @@ class TestProcessBinaryFileAdditiveContract:
         assert result["toc_evidence_pages"] == [4, 8]
 
     @pytest.mark.asyncio
+    async def test_process_binary_file_uses_logical_range_diagnostics_when_chunk_not_evaluated(
+        self, monkeypatch, tmp_path
+    ):
+        from local_read_mcp.server import app as server_app
+        from local_read_mcp.segmenter import Chunk
+
+        test_file = tmp_path / "sample.pdf"
+        test_file.write_text("fake pdf", encoding="utf-8")
+
+        class FakeBackend:
+            name = "Simple"
+            warning = None
+
+            def supports_format(self, format_name):
+                return True
+
+            def process(self, file_path, format_name, **kwargs):
+                return {
+                    "source": {"path": str(file_path), "format": format_name, "page_count": 1},
+                    "metadata": {},
+                    "blocks": {
+                        "block_00000000": {
+                            "type": "text",
+                            "page": 1,
+                            "bbox": [0, 0, 612, 792],
+                            "confidence": 0.9,
+                            "content": "content",
+                        }
+                    },
+                    "reading_order": ["block_00000000"],
+                }
+
+        class FakeRegistry:
+            def select_best(self, format_name=None):
+                return FakeBackend()
+
+            def get(self, backend_type):
+                return FakeBackend()
+
+        monkeypatch.setattr(server_app, "get_registry", lambda: FakeRegistry())
+        monkeypatch.setattr(
+            server_app,
+            "resolve_page_range",
+            lambda **kwargs: (
+                70,
+                75,
+                {
+                    "mode": "logical",
+                    "strategy": "toc_offset",
+                    "offset": 10,
+                    "toc_resolution_mode": "heuristic",
+                    "toc_confidence": 0.71,
+                    "toc_evidence_pages": [12, 18],
+                    "resolved": {"start_page": 70, "end_page": 75},
+                },
+            ),
+        )
+        monkeypatch.setattr(
+            server_app,
+            "plan_chunks",
+            lambda **kwargs: (
+                [Chunk(phys_start=70, phys_end=75, title="single")],
+                {
+                    "mode": "not_evaluated",
+                    "confidence": None,
+                    "offset": None,
+                    "evidence_pages": [],
+                },
+            ),
+        )
+
+        result = await server_app.process_binary_file.fn(
+            file_path=str(test_file),
+            format="pdf",
+            page_range_mode="logical",
+        )
+
+        assert result["success"] is True
+        assert result["toc_resolution_mode"] == "heuristic"
+        assert result["toc_confidence"] == 0.71
+        assert result["toc_offset"] == 10
+        assert result["toc_evidence_pages"] == [12, 18]
+
+    @pytest.mark.asyncio
     async def test_process_binary_file_preserves_existing_additive_fields(self, monkeypatch, tmp_path):
         from local_read_mcp.server import app as server_app
         from local_read_mcp.segmenter import Chunk
@@ -1138,6 +1222,83 @@ class TestProcessBinaryFileAdditiveContract:
         assert result["success"] is True
         assert observed["start_page"] == 70
         assert observed["end_page"] == 75
+
+    @pytest.mark.asyncio
+    async def test_process_binary_file_strict_mode_preserves_zero_end_page(self, monkeypatch, tmp_path):
+        from local_read_mcp.server import app as server_app
+        from local_read_mcp.segmenter import Chunk
+
+        observed = {}
+        test_file = tmp_path / "sample.pdf"
+        test_file.write_text("fake pdf", encoding="utf-8")
+
+        class FakeBackend:
+            name = "Simple"
+            warning = None
+
+            def supports_format(self, format_name):
+                return True
+
+            def process(self, file_path, format_name, **kwargs):
+                return {
+                    "source": {"path": str(file_path), "format": format_name, "page_count": 1},
+                    "metadata": {},
+                    "blocks": {
+                        "block_00000000": {
+                            "type": "text",
+                            "page": 1,
+                            "bbox": [0, 0, 612, 792],
+                            "confidence": 0.9,
+                            "content": "content",
+                        }
+                    },
+                    "reading_order": ["block_00000000"],
+                }
+
+        class FakeRegistry:
+            def select_best(self, format_name=None):
+                return FakeBackend()
+
+            def get(self, backend_type):
+                return FakeBackend()
+
+        def fake_plan_chunks(**kwargs):
+            observed["start_page"] = kwargs["start_page"]
+            observed["end_page"] = kwargs["end_page"]
+            observed["chapter_split"] = kwargs["chapter_split"]
+            return [Chunk(phys_start=kwargs["start_page"], phys_end=kwargs["end_page"], title="single")]
+
+        monkeypatch.setattr(server_app, "get_registry", lambda: FakeRegistry())
+        monkeypatch.setattr(server_app, "plan_chunks", fake_plan_chunks)
+        monkeypatch.setattr(
+            server_app,
+            "resolve_page_range",
+            lambda **kwargs: (
+                0,
+                0,
+                {
+                    "mode": "physical",
+                    "strategy": "clamped_physical",
+                    "requested": {"start_page": 0, "end_page": 0},
+                    "resolved": {"start_page": 0, "end_page": 0},
+                },
+            ),
+        )
+
+        result = await server_app.process_binary_file.fn(
+            file_path=str(test_file),
+            format="pdf",
+            chapter_split="chapter",
+            strict_page_range=True,
+            start_page=0,
+            end_page=0,
+        )
+
+        assert result["success"] is True
+        assert observed["chapter_split"] is False
+        assert observed["start_page"] == 0
+        assert observed["end_page"] == 0
+        assert result["resolved_end_page"] == 0
 
 
 class TestAnalyzeImagesBatch:

@@ -498,11 +498,32 @@ async def process_binary_file(
     else:
         chunks = chunks_result
 
-    additive_fields["toc_confidence"] = chunk_diagnostics.get("confidence")
-    additive_fields["toc_resolution_mode"] = str(chunk_diagnostics.get("mode", "not_evaluated"))
-    additive_fields["toc_offset"] = chunk_diagnostics.get("offset")
+    toc_confidence = chunk_diagnostics.get("confidence")
+    toc_mode = str(chunk_diagnostics.get("mode", "not_evaluated"))
+    toc_offset = chunk_diagnostics.get("offset")
     evidence_pages = chunk_diagnostics.get("evidence_pages")
-    additive_fields["toc_evidence_pages"] = evidence_pages if isinstance(evidence_pages, list) else []
+    toc_evidence_pages = evidence_pages if isinstance(evidence_pages, list) else []
+
+    # In logical range mode, resolved_page_map may carry TOC diagnostics from range resolver.
+    # Prefer those when chunk planning diagnostics are not evaluated.
+    if normalized_page_range_mode == "logical" and isinstance(resolved_page_map, dict):
+        if toc_mode == "not_evaluated":
+            resolved_mode = resolved_page_map.get("toc_resolution_mode")
+            if isinstance(resolved_mode, str) and resolved_mode:
+                toc_mode = resolved_mode
+        if toc_confidence is None and isinstance(resolved_page_map.get("toc_confidence"), (int, float)):
+            toc_confidence = float(resolved_page_map["toc_confidence"])
+        if toc_offset is None and resolved_page_map.get("offset") is not None:
+            toc_offset = resolved_page_map.get("offset")
+        if not toc_evidence_pages:
+            resolved_evidence = resolved_page_map.get("toc_evidence_pages")
+            if isinstance(resolved_evidence, list):
+                toc_evidence_pages = resolved_evidence
+
+    additive_fields["toc_confidence"] = toc_confidence
+    additive_fields["toc_resolution_mode"] = toc_mode
+    additive_fields["toc_offset"] = toc_offset
+    additive_fields["toc_evidence_pages"] = toc_evidence_pages
     fallback_reason = chunk_diagnostics.get("fallback_reason")
     if isinstance(fallback_reason, str) and fallback_reason:
         warnings.append(fallback_reason)

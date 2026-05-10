@@ -81,6 +81,25 @@ def test_resolve_page_range_logical_without_fitz_keeps_open_ended_range(monkeypa
     assert page_map["resolved"]["end_page"] is None
 
 
+def test_plan_chunks_no_split_keeps_zero_end_page():
+    """end_page=0 must not be treated as falsy and expanded."""
+    from local_read_mcp.server import orchestrator
+
+    chunks = orchestrator.plan_chunks(
+        file_path="sample.pdf",
+        format="pdf",
+        backend_name="Simple",
+        chapter_split=False,
+        start_page=0,
+        end_page=0,
+        return_diagnostics=False,
+    )
+
+    assert len(chunks) == 1
+    assert chunks[0].phys_start == 0
+    assert chunks[0].phys_end == 0
+
+
 def test_process_and_save_slices_pdf_chunk_without_name_error(monkeypatch, tmp_path):
     """PDF chunk slicing path should work (regression for missing tempfile import)."""
     from local_read_mcp.server import orchestrator

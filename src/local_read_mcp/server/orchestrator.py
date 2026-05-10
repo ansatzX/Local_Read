@@ -112,27 +112,33 @@ def plan_chunks(
             return chunks, diagnostics
         return chunks
 
+    def _default_start() -> int:
+        return 0 if start_page is None else int(start_page)
+
+    def _default_end(max_end: int = 2**31 - 1) -> int:
+        return max_end if end_page is None else int(end_page)
+
     # No splitting requested
     if chapter_split is False or chapter_split is None:
-        return _return([Chunk(phys_start=start_page or 0, phys_end=end_page or 2**31 - 1)])
+        return _return([Chunk(phys_start=_default_start(), phys_end=_default_end())])
 
     # Only PDF + layout-capable backend triggers the segmenter
     if format != "pdf":
-        return _return([Chunk(phys_start=start_page or 0, phys_end=end_page or 2**31 - 1)])
+        return _return([Chunk(phys_start=_default_start(), phys_end=_default_end())])
 
     # Load document for page count and chapter detection
     try:
         import fitz  # noqa: PLC0415
     except ImportError:
         logger.warning("PyMuPDF not available, cannot detect chapters")
-        return _return([Chunk(phys_start=start_page or 0, phys_end=end_page or 2**31 - 1)])
+        return _return([Chunk(phys_start=_default_start(), phys_end=_default_end())])
 
     try:
         doc = fitz.open(file_path)
     except Exception as e:
         logger.warning("Cannot open PDF for chapter detection: %s, processing whole file", e)
-        s = start_page or 0
-        e = end_page or 2**31 - 1
+        s = _default_start()
+        e = _default_end()
         return _return([Chunk(phys_start=s, phys_end=e)])
 
     total = doc.page_count
@@ -155,8 +161,8 @@ def plan_chunks(
 
     if not need_split:
         doc.close()
-        s = start_page or 0
-        e = min(end_page or total - 1, total - 1)
+        s = _default_start()
+        e = min(_default_end(total - 1), total - 1)
         return _return([Chunk(phys_start=s, phys_end=e)])
 
     # Run segmenter
