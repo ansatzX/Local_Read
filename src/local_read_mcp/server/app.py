@@ -470,6 +470,104 @@ def _build_image_manifest(image_metadata: list[dict[str, Any]], markdown: str) -
     }
 
 
+def _build_figure_mapping_template(image_manifest: dict[str, Any]) -> dict[str, Any]:
+    matches = image_manifest.get("figure_matches", [])
+    entries: list[dict[str, Any]] = []
+    for match in matches if isinstance(matches, list) else []:
+        if not isinstance(match, dict):
+            continue
+        entries.append(
+            {
+                "slot_id": match.get("slot_id"),
+                "figure_number": match.get("figure_number"),
+                "caption": match.get("caption", ""),
+                "page_hint": match.get("page_hint"),
+                "primary_candidate_id": match.get("primary_candidate_id"),
+                "candidate_cluster_ids": match.get("candidate_cluster_ids", []),
+                "candidates": match.get("candidates", []),
+                "selected_image_id": None,
+                "selected_cluster_id": None,
+                "decision_status": "pending",
+                "notes": "",
+            }
+        )
+
+    return {
+        "version": "1",
+        "instructions": (
+            "For each slot, choose selected_image_id (and optionally selected_cluster_id). "
+            "Set decision_status to matched/ambiguous/unmatched and add notes when needed."
+        ),
+        "decision_file": "figure_mapping_decision.json",
+        "entries": entries,
+    }
+
+
+def _validate_figure_mapping_decision(
+    image_manifest: dict[str, Any],
+    decision: dict[str, Any],
+) -> dict[str, Any]:
+    valid_slot_ids = {
+        str(slot.get("slot_id"))
+        for slot in (image_manifest.get("figure_slots", []) if isinstance(image_manifest.get("figure_slots"), list) else [])
+        if isinstance(slot, dict) and slot.get("slot_id") is not None
+    }
+    valid_image_ids = {
+        str(img.get("canonical_image_id"))
+        for img in (image_manifest.get("images", []) if isinstance(image_manifest.get("images"), list) else [])
+        if isinstance(img, dict) and img.get("canonical_image_id") is not None
+    }
+    valid_cluster_ids = {
+        str(group.get("group_id"))
+        for group in (
+            image_manifest.get("near_duplicate_groups", [])
+            if isinstance(image_manifest.get("near_duplicate_groups"), list)
+            else []
+        )
+        if isinstance(group, dict) and group.get("group_id") is not None
+    }
+
+    entries = decision.get("entries", []) if isinstance(decision, dict) else []
+    issues: list[dict[str, Any]] = []
+    matched = 0
+    ambiguous = 0
+    unmatched = 0
+
+    for idx, entry in enumerate(entries if isinstance(entries, list) else []):
+        if not isinstance(entry, dict):
+            issues.append({"index": idx, "error": "entry is not an object"})
+            continue
+        slot_id = str(entry.get("slot_id", ""))
+        selected_image_id = entry.get("selected_image_id")
+        selected_cluster_id = entry.get("selected_cluster_id")
+        status = str(entry.get("decision_status", "pending")).lower()
+
+        if slot_id and slot_id not in valid_slot_ids:
+            issues.append({"slot_id": slot_id, "error": "unknown slot_id"})
+        if selected_image_id is not None and str(selected_image_id) not in valid_image_ids:
+            issues.append({"slot_id": slot_id, "error": "unknown selected_image_id"})
+        if selected_cluster_id is not None and str(selected_cluster_id) not in valid_cluster_ids:
+            issues.append({"slot_id": slot_id, "error": "unknown selected_cluster_id"})
+
+        if status == "matched":
+            matched += 1
+        elif status == "ambiguous":
+            ambiguous += 1
+        elif status == "unmatched":
+            unmatched += 1
+
+    return {
+        "valid": len(issues) == 0,
+        "issues": issues,
+        "summary": {
+            "entries": len(entries if isinstance(entries, list) else []),
+            "matched": matched,
+            "ambiguous": ambiguous,
+            "unmatched": unmatched,
+        },
+    }
+
+
 if VISION_ENABLED:
     @mcp.tool()
     async def analyze_image(
@@ -936,8 +1034,13 @@ async def process_binary_file(
                 image_manifest_path = output_path / "image_manifest.json"
                 with open(image_manifest_path, "w", encoding="utf-8") as f:
                     json.dump(image_manifest, f, ensure_ascii=False, indent=2)
+                figure_mapping_template = _build_figure_mapping_template(image_manifest)
+                figure_mapping_template_path = output_path / "figure_mapping_template.json"
+                with open(figure_mapping_template_path, "w", encoding="utf-8") as f:
+                    json.dump(figure_mapping_template, f, ensure_ascii=False, indent=2)
                 result["image_manifest"] = image_manifest
                 result["files"]["image_manifest"] = str(image_manifest_path)
+                result["files"]["figure_mapping_template"] = str(figure_mapping_template_path)
                 result["figure_slots"] = image_manifest.get("figure_slots", [])
                 result["figure_image_matches"] = image_manifest.get("figure_matches", [])
             figure_refs = _extract_figure_references(result.get("markdown_content", ""))
@@ -1111,10 +1214,28 @@ async def process_binary_file(
             image_manifest_path = output_path / "image_manifest.json"
             with open(image_manifest_path, "w", encoding="utf-8") as f:
                 json.dump(image_manifest, f, ensure_ascii=False, indent=2)
+            figure_mapping_template = _build_figure_mapping_template(image_manifest)
+            figure_mapping_template_path = output_path / "figure_mapping_template.json"
+            with open(figure_mapping_template_path, "w", encoding="utf-8") as f:
+                json.dump(figure_mapping_template, f, ensure_ascii=False, indent=2)
             files_result["image_manifest"] = str(image_manifest_path)
+            files_result["figure_mapping_template"] = str(figure_mapping_template_path)
             result_payload["image_manifest"] = image_manifest
             result_payload["figure_slots"] = image_manifest.get("figure_slots", [])
             result_payload["figure_image_matches"] = image_manifest.get("figure_matches", [])
+
+            decision_path = output_path / "figure_mapping_decision.json"
+            if decision_path.exists():
+                try:
+                    decision_data = json.loads(decision_path.read_text(encoding="utf-8"))
+                    validation = _validate_figure_mapping_decision(image_manifest, decision_data)
+                    validation_path = output_path / "figure_mapping_validation.json"
+                    with open(validation_path, "w", encoding="utf-8") as f:
+                        json.dump(validation, f, ensure_ascii=False, indent=2)
+                    files_result["figure_mapping_validation"] = str(validation_path)
+                    result_payload["figure_mapping_validation"] = validation
+                except Exception as e:
+                    warnings.append(f"Failed to validate figure mapping decision: {e}")
         figure_refs = _extract_figure_references(merged_md)
         result_payload["figure_reference_count"] = len(figure_refs)
         result_payload["figure_references"] = figure_refs
