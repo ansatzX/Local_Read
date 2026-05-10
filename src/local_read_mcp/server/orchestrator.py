@@ -200,7 +200,27 @@ def process_and_save(
 
 def merge_chunk_markdowns(chunk_results: list[dict[str, Any]]) -> str:
     """Concatenate chunk markdowns with chapter separators."""
+    def _trim_overlap_window_duplicate(previous_md: str, current_md: str) -> str:
+        """Drop duplicated prefix in current chunk when adjacent chunks overlap in page range."""
+        if not previous_md or not current_md:
+            return current_md
+
+        previous_lines = previous_md.splitlines()
+        current_lines = current_md.splitlines()
+        max_overlap_lines = min(len(previous_lines), len(current_lines), 200)
+
+        for overlap in range(max_overlap_lines, 0, -1):
+            if previous_lines[-overlap:] != current_lines[:overlap]:
+                continue
+
+            overlap_text = "\n".join(current_lines[:overlap]).strip()
+            if overlap >= 2 or len(overlap_text) >= 40:
+                return "\n".join(current_lines[overlap:]).lstrip("\n")
+
+        return current_md
+
     parts: list[str] = []
+    previous_success: dict[str, Any] | None = None
     for cr in chunk_results:
         if "error" in cr:
             parts.append(
@@ -212,8 +232,16 @@ def merge_chunk_markdowns(chunk_results: list[dict[str, Any]]) -> str:
         title = cr.get("title", "")
         p_start = cr.get("phys_start", 0)
         p_end = cr.get("phys_end", 0)
+
+        if previous_success is not None and int(previous_success.get("phys_end", -1)) >= int(p_start):
+            md = _trim_overlap_window_duplicate(str(previous_success.get("markdown_content", "")), md)
+
         header = f"\n\n---\n# {title}  (pages {p_start + 1}–{p_end + 1})\n\n"
         parts.append(header + md)
+        previous_success = {
+            "phys_end": p_end,
+            "markdown_content": md,
+        }
     return "\n".join(parts).strip()
 
 

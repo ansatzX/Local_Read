@@ -74,3 +74,43 @@ def test_process_and_save_slices_pdf_chunk_without_name_error(monkeypatch, tmp_p
     assert "sliced_pdf_path" in result
     assert Path(result["sliced_pdf_path"]).exists()
 
+
+def test_merge_chunk_markdowns_dedupes_only_overlap_window():
+    """Overlap prefix duplication should be removed for adjacent overlapping chunks only."""
+    from local_read_mcp.server import orchestrator
+
+    duplicated_overlap = "\n".join(
+        [
+            "Shared overlap paragraph line A with enough characters.",
+            "Shared overlap paragraph line B with enough characters.",
+        ]
+    )
+
+    merged = orchestrator.merge_chunk_markdowns(
+        [
+            {
+                "title": "Chapter 1",
+                "phys_start": 0,
+                "phys_end": 2,
+                "markdown_content": "\n".join(["Chunk1 opening", duplicated_overlap]),
+            },
+            {
+                "title": "Chapter 2",
+                "phys_start": 2,
+                "phys_end": 4,
+                "markdown_content": "\n".join([duplicated_overlap, "Chunk2 unique content"]),
+            },
+            {
+                "title": "Chapter 3",
+                "phys_start": 5,
+                "phys_end": 6,
+                "markdown_content": "\n".join([duplicated_overlap, "Chunk3 unique content"]),
+            },
+        ]
+    )
+
+    assert merged.count(duplicated_overlap) == 2
+    assert merged.count("Chunk2 unique content") == 1
+    assert "# Chapter 1  (pages 1–3)" in merged
+    assert "# Chapter 2  (pages 3–5)" in merged
+    assert "# Chapter 3  (pages 6–7)" in merged
