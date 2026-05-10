@@ -12,7 +12,6 @@ import json
 import logging
 import os
 import re
-import time
 from pathlib import Path
 from typing import Any
 
@@ -32,7 +31,8 @@ from .orchestrator import (
     resolve_page_range,
     save_structural_toc,
 )
-from .vision import call_vision_api
+from .vision import analyze_image_with_config, save_analysis_markdown
+from .vision_batch import analyze_images_batch_with_cache
 
 logger = logging.getLogger(__name__)
 
@@ -150,48 +150,46 @@ if VISION_ENABLED:
             VISION_MODEL: Model name (or OPENAI_VISION_MODEL, default: gpt-4o)
             VISION_MAX_IMAGE_SIZE_MB: Max image size in MB (default: 20)
         """
-        if not os.path.exists(image_path):
-            return {"success": False, "error": f"Image file not found: {image_path}"}
-
-        file_size_mb = os.path.getsize(image_path) / (1024 * 1024)
-        max_size = _config.vision_max_image_size_mb
-        if file_size_mb > max_size:
-            return {"success": False, "error": f"Image too large ({file_size_mb:.2f}MB). Maximum: {max_size}MB"}
-
-        # Call vision API using MCP service config only.
-        result_text = await call_vision_api(
+        result = await analyze_image_with_config(
             image_path=image_path,
             question=question,
             api_key=_config.api_key,
             base_url=_config.base_url,
-            model=_config.model
+            model=_config.model,
+            max_size_mb=_config.vision_max_image_size_mb,
         )
+        if not result.get("success"):
+            return result
 
-        # Save to .local_read_mcp/analysis/ in the working directory
-        from pathlib import Path as _Path
-        analysis_dir = _Path.cwd() / ".local_read_mcp" / "analysis"
-        analysis_dir.mkdir(parents=True, exist_ok=True)
-
-        image_name = _Path(image_path).stem
-        safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in image_name)
-        timestamp = time.strftime("%Y%m%d_%H%M%S", time.localtime())
-        result_filename = f"{safe_name}_{timestamp}.md"
-        result_path = analysis_dir / result_filename
-
-        with open(result_path, 'w', encoding='utf-8') as f:
-            f.write(f"# Image Analysis: {image_name}\n\n")
-            f.write(f"- **Source**: `{image_path}`\n")
-            f.write(f"- **Question**: {question}\n")
-            f.write(f"- **Timestamp**: {time.strftime('%Y-%m-%d %H:%M:%S')}\n\n")
-            f.write("## Analysis\n\n")
-            f.write(result_text)
-            f.write("\n")
+        result_text = result["analysis"]
+        result_path = save_analysis_markdown(
+            image_path=image_path,
+            question=question,
+            result_text=result_text,
+        )
 
         return {
             "success": True,
             "analysis": result_text,
             "saved_path": str(result_path),
         }
+
+    @mcp.tool()
+    async def analyze_images_batch(
+        image_paths: list[str],
+        question: str = "Describe this image in detail. What type of content is it?",
+        batch_size: int = 6,
+    ) -> dict[str, Any]:
+        """Analyze images in small batches with content-hash cache."""
+        return await analyze_images_batch_with_cache(
+            image_paths=image_paths,
+            question=question,
+            batch_size=batch_size,
+            api_key=_config.api_key,
+            base_url=_config.base_url,
+            model=_config.model,
+            max_size_mb=_config.vision_max_image_size_mb,
+        )
 
 
 

@@ -39,8 +39,8 @@ async def test_analyze_image_does_not_expose_api_key_parameter(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_analyze_image_not_registered_without_vision_credentials(monkeypatch):
-    monkeypatch.delenv("VISION_API_KEY", raising=False)
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("VISION_API_KEY", "")
+    monkeypatch.setenv("OPENAI_API_KEY", "")
 
     import local_read_mcp.config as config_module
     from local_read_mcp.server import app as app_module
@@ -51,3 +51,19 @@ async def test_analyze_image_not_registered_without_vision_credentials(monkeypat
 
     assert "process_binary_file" in names
     assert "analyze_image" not in names
+    assert "analyze_images_batch" not in names
+
+
+@pytest.mark.asyncio
+async def test_analyze_images_batch_registered_with_vision_credentials(monkeypatch):
+    monkeypatch.setenv("VISION_API_KEY", "dummy-key")
+
+    import local_read_mcp.config as config_module
+    from local_read_mcp.server import app as app_module
+
+    config_module._config = None
+    reloaded = importlib.reload(app_module)
+    names = await _tool_names(reloaded)
+
+    assert "analyze_image" in names
+    assert "analyze_images_batch" in names
