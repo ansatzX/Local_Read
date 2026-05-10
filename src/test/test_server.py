@@ -5,6 +5,8 @@ This module contains tests for the FastMCP server implementation.
 """
 
 import sys
+import asyncio
+import importlib
 from pathlib import Path
 
 import pytest
@@ -1136,3 +1138,180 @@ class TestProcessBinaryFileAdditiveContract:
         assert result["success"] is True
         assert observed["start_page"] == 70
         assert observed["end_page"] == 75
+
+
+class TestAnalyzeImagesBatch:
+    """Tests for analyze_images_batch tool behavior."""
+
+    @pytest.mark.asyncio
+    async def test_analyze_images_batch_ordering_and_cache_hit_with_batch_size_gt_1(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("VISION_API_KEY", "dummy-key")
+        monkeypatch.chdir(tmp_path)
+
+        import local_read_mcp.config as config_module
+        from local_read_mcp.server import app as app_module
+        from local_read_mcp.server import vision as vision_module
+
+        config_module._config = None
+        reloaded = importlib.reload(app_module)
+
+        call_count = {"n": 0}
+
+        async def fake_call_vision_api(image_path, question, api_key, base_url, model):
+            call_count["n"] += 1
+            return f"analysis:{Path(image_path).name}:{question}:{model}"
+
+        monkeypatch.setattr(vision_module, "call_vision_api", fake_call_vision_api)
+
+        image1 = tmp_path / "a.png"
+        image2 = tmp_path / "b.png"
+        image3 = tmp_path / "c.png"
+        image1.write_bytes(b"image-a")
+        image2.write_bytes(b"image-b")
+        image3.write_bytes(b"image-c")
+        ordered_paths = [str(image3), str(image1), str(image2)]
+
+        first = await reloaded.analyze_images_batch.fn(
+            image_paths=ordered_paths,
+            question="what is this?",
+            batch_size=2,
+        )
+
+        assert first["success"] is True
+        assert len(first["results"]) == 3
+        assert [item["image_path"] for item in first["results"]] == ordered_paths
+        assert [item["cache_hit"] for item in first["results"]] == [False, False, False]
+        assert all(("analysis" in item) for item in first["results"])
+
+        second = await reloaded.analyze_images_batch.fn(
+            image_paths=ordered_paths,
+            question="what is this?",
+            batch_size=2,
+        )
+
+        assert second["success"] is True
+        assert [item["cache_hit"] for item in second["results"]] == [True, True, True]
+        assert call_count["n"] == 3
+
+    @pytest.mark.asyncio
+    async def test_analyze_images_batch_same_stem_paths_do_not_collide(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("VISION_API_KEY", "dummy-key")
+        monkeypatch.chdir(tmp_path)
+
+        import local_read_mcp.config as config_module
+        from local_read_mcp.server import app as app_module
+        from local_read_mcp.server import vision as vision_module
+
+        config_module._config = None
+        reloaded = importlib.reload(app_module)
+
+        async def fake_call_vision_api(image_path, question, api_key, base_url, model):
+            return f"analysis:{Path(image_path).parent.name}"
+
+        monkeypatch.setattr(vision_module, "call_vision_api", fake_call_vision_api)
+        monkeypatch.setattr(vision_module.time, "strftime", lambda *args, **kwargs: "fixed-second")
+        monkeypatch.setattr(vision_module.time, "time_ns", lambda: 1)
+
+        dir1 = tmp_path / "dir1"
+        dir2 = tmp_path / "dir2"
+        dir1.mkdir()
+        dir2.mkdir()
+        image1 = dir1 / "same.png"
+        image2 = dir2 / "same.png"
+        image1.write_bytes(b"image-1")
+        image2.write_bytes(b"image-2")
+
+        result = await reloaded.analyze_images_batch.fn(
+            image_paths=[str(image1), str(image2)],
+            question="what is this?",
+            batch_size=2,
+        )
+
+        assert result["success"] is True
+        saved_paths = [item["saved_path"] for item in result["results"]]
+        assert saved_paths[0] != saved_paths[1]
+        assert Path(saved_paths[0]).exists()
+        assert Path(saved_paths[1]).exists()
+
+    @pytest.mark.asyncio
+    async def test_analyze_images_batch_duplicate_key_in_same_batch_avoids_duplicate_calls(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("VISION_API_KEY", "dummy-key")
+        monkeypatch.chdir(tmp_path)
+
+        import local_read_mcp.config as config_module
+        from local_read_mcp.server import app as app_module
+        from local_read_mcp.server import vision as vision_module
+
+        config_module._config = None
+        reloaded = importlib.reload(app_module)
+
+        call_count = {"n": 0}
+
+        async def fake_call_vision_api(image_path, question, api_key, base_url, model):
+            call_count["n"] += 1
+            return "analysis:shared"
+
+        monkeypatch.setattr(vision_module, "call_vision_api", fake_call_vision_api)
+
+        image = tmp_path / "dup.png"
+        image.write_bytes(b"image-dup")
+
+        result = await reloaded.analyze_images_batch.fn(
+            image_paths=[str(image), str(image)],
+            question="what is this?",
+            batch_size=2,
+        )
+
+        assert result["success"] is True
+        assert [item["cache_hit"] for item in result["results"]] == [False, True]
+        assert call_count["n"] == 1
+
+    @pytest.mark.asyncio
+    async def test_analyze_images_batch_concurrent_calls_same_key_use_one_underlying_call(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("VISION_API_KEY", "dummy-key")
+        monkeypatch.chdir(tmp_path)
+
+        import local_read_mcp.config as config_module
+        from local_read_mcp.server import app as app_module
+        from local_read_mcp.server import vision as vision_module
+
+        config_module._config = None
+        reloaded = importlib.reload(app_module)
+
+        call_count = {"n": 0}
+
+        async def fake_call_vision_api(image_path, question, api_key, base_url, model):
+            call_count["n"] += 1
+            await asyncio.sleep(0.05)
+            return "analysis:shared"
+
+        monkeypatch.setattr(vision_module, "call_vision_api", fake_call_vision_api)
+
+        image = tmp_path / "concurrent.png"
+        image.write_bytes(b"same-bytes")
+
+        first_task = asyncio.create_task(
+            reloaded.analyze_images_batch.fn(
+                image_paths=[str(image)],
+                question="what is this?",
+                batch_size=1,
+            )
+        )
+        second_task = asyncio.create_task(
+            reloaded.analyze_images_batch.fn(
+                image_paths=[str(image)],
+                question="what is this?",
+                batch_size=1,
+            )
+        )
+        first_result, second_result = await asyncio.gather(first_task, second_task)
+
+        assert first_result["success"] is True
+        assert second_result["success"] is True
+        assert call_count["n"] == 1
+        assert sorted(
+            [
+                first_result["results"][0]["cache_hit"],
+                second_result["results"][0]["cache_hit"],
+            ]
+        ) == [False, True]
