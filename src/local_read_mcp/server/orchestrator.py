@@ -22,26 +22,41 @@ def plan_chunks(
     start_page: int | None,
     end_page: int | None,
     page_batch_size: int = 64,
-) -> list[Any]:
+    enable_toc_auto_fallback: bool = False,
+    toc_confidence_threshold: float = 0.55,
+    return_diagnostics: bool = False,
+) -> list[Any] | tuple[list[Any], dict[str, Any]]:
     """Determine processing chunks for the given document.
 
     Returns a list of Chunk objects (from the segmenter module).
     A single-element list means no splitting.
     """
+    diagnostics: dict[str, Any] = {
+        "mode": "not_evaluated",
+        "confidence": None,
+        "offset": None,
+        "evidence_pages": [],
+    }
+
+    def _return(chunks: list[Any]) -> list[Any] | tuple[list[Any], dict[str, Any]]:
+        if return_diagnostics:
+            return chunks, diagnostics
+        return chunks
+
     # No splitting requested
     if chapter_split is False or chapter_split is None:
-        return [Chunk(phys_start=start_page or 0, phys_end=end_page or 2**31 - 1)]
+        return _return([Chunk(phys_start=start_page or 0, phys_end=end_page or 2**31 - 1)])
 
     # Only PDF + layout-capable backend triggers the segmenter
     if format != "pdf":
-        return [Chunk(phys_start=start_page or 0, phys_end=end_page or 2**31 - 1)]
+        return _return([Chunk(phys_start=start_page or 0, phys_end=end_page or 2**31 - 1)])
 
     # Load document for page count and chapter detection
     try:
         import fitz  # noqa: PLC0415
     except ImportError:
         logger.warning("PyMuPDF not available, cannot detect chapters")
-        return [Chunk(phys_start=start_page or 0, phys_end=end_page or 2**31 - 1)]
+        return _return([Chunk(phys_start=start_page or 0, phys_end=end_page or 2**31 - 1)])
 
     try:
         doc = fitz.open(file_path)
@@ -49,7 +64,7 @@ def plan_chunks(
         logger.warning("Cannot open PDF for chapter detection: %s, processing whole file", e)
         s = start_page or 0
         e = end_page or 2**31 - 1
-        return [Chunk(phys_start=s, phys_end=e)]
+        return _return([Chunk(phys_start=s, phys_end=e)])
 
     total = doc.page_count
 
@@ -73,15 +88,38 @@ def plan_chunks(
         doc.close()
         s = start_page or 0
         e = min(end_page or total - 1, total - 1)
-        return [Chunk(phys_start=s, phys_end=e)]
+        return _return([Chunk(phys_start=s, phys_end=e)])
 
     # Run segmenter
     try:
         extractor = TocExtractor()
-        chapters = extractor.extract(doc)
+        extracted = extractor.extract(doc, with_diagnostics=True)
+        if isinstance(extracted, tuple):
+            chapters, toc_diagnostics = extracted
+        else:
+            chapters = extracted
+            toc_diagnostics = None
+        if toc_diagnostics is not None:
+            diagnostics = toc_diagnostics.as_dict()
         planner = ChunkPlanner(overlap=2)
 
-        if chapters:
+        use_chapters = bool(chapters)
+        if (
+            use_chapters
+            and enable_toc_auto_fallback
+            and diagnostics.get("mode") != "not_evaluated"
+            and isinstance(diagnostics.get("confidence"), (int, float))
+            and float(diagnostics["confidence"]) < float(toc_confidence_threshold)
+            and not isinstance(split_type, int)
+        ):
+            use_chapters = False
+            diagnostics["fallback_applied"] = True
+            diagnostics["fallback_reason"] = (
+                f"TOC confidence {float(diagnostics['confidence']):.2f} below threshold "
+                f"{float(toc_confidence_threshold):.2f}; using fixed chunks."
+            )
+
+        if use_chapters:
             raw_chunks = planner.plan_from_chapters(chapters, total_pages=total)
         elif isinstance(split_type, int):
             raw_chunks = planner.plan_fixed(total, chunk_size=split_type)
@@ -107,9 +145,9 @@ def plan_chunks(
                 e = min(e, end_page)
             if s <= e:
                 bounded.append(Chunk(phys_start=s, phys_end=e, title=c.title, level=c.level, batch_size=c.batch_size))
-        return bounded
+        return _return(bounded)
 
-    return raw_chunks
+    return _return(raw_chunks)
 
 
 def process_and_save(

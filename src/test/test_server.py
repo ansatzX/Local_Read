@@ -257,6 +257,101 @@ class TestProcessBinaryFileChunkPlanning:
         assert len(chunks) == 1
         assert chunks[0].phys_end - chunks[0].phys_start + 1 == 50
 
+    def test_plan_chunks_low_confidence_falls_back_when_enabled(self, monkeypatch):
+        from local_read_mcp.server import orchestrator
+        from local_read_mcp.segmenter import Chapter
+        from local_read_mcp.segmenter.toc_extractor import TocDiagnostics
+        from types import SimpleNamespace
+
+        class FakeDoc:
+            page_count = 50
+            def close(self):
+                pass
+
+        class FakeExtractor:
+            def extract(self, doc, with_diagnostics=False):
+                chapters = [
+                    Chapter(1, "Ch 1", 1, 0),
+                    Chapter(1, "Ch 2", 20, 19),
+                ]
+                diagnostics = TocDiagnostics(
+                    mode="heuristic",
+                    confidence=0.2,
+                    offset=0,
+                    evidence_pages=[1],
+                )
+                if with_diagnostics:
+                    return chapters, diagnostics
+                return chapters
+
+        monkeypatch.setitem(__import__('sys').modules, 'fitz', SimpleNamespace(open=lambda path: FakeDoc()))
+        monkeypatch.setattr(orchestrator, "TocExtractor", FakeExtractor)
+
+        chunks, diagnostics = orchestrator.plan_chunks(
+            file_path='sample.pdf',
+            format='pdf',
+            backend_name='Simple',
+            chapter_split=True,
+            start_page=None,
+            end_page=None,
+            page_batch_size=10,
+            enable_toc_auto_fallback=True,
+            toc_confidence_threshold=0.55,
+            return_diagnostics=True,
+        )
+
+        assert len(chunks) == 5
+        assert diagnostics["mode"] == "heuristic"
+        assert diagnostics["confidence"] == 0.2
+        assert diagnostics["fallback_applied"] is True
+        assert "below threshold" in diagnostics["fallback_reason"]
+
+    def test_plan_chunks_low_confidence_does_not_fallback_by_default(self, monkeypatch):
+        from local_read_mcp.server import orchestrator
+        from local_read_mcp.segmenter import Chapter
+        from local_read_mcp.segmenter.toc_extractor import TocDiagnostics
+        from types import SimpleNamespace
+
+        class FakeDoc:
+            page_count = 50
+            def close(self):
+                pass
+
+        class FakeExtractor:
+            def extract(self, doc, with_diagnostics=False):
+                chapters = [
+                    Chapter(1, "Ch 1", 1, 0),
+                    Chapter(1, "Ch 2", 20, 19),
+                ]
+                diagnostics = TocDiagnostics(
+                    mode="heuristic",
+                    confidence=0.2,
+                    offset=0,
+                    evidence_pages=[1],
+                )
+                if with_diagnostics:
+                    return chapters, diagnostics
+                return chapters
+
+        monkeypatch.setitem(__import__('sys').modules, 'fitz', SimpleNamespace(open=lambda path: FakeDoc()))
+        monkeypatch.setattr(orchestrator, "TocExtractor", FakeExtractor)
+
+        chunks, diagnostics = orchestrator.plan_chunks(
+            file_path='sample.pdf',
+            format='pdf',
+            backend_name='Simple',
+            chapter_split=True,
+            start_page=None,
+            end_page=None,
+            page_batch_size=10,
+            return_diagnostics=True,
+        )
+
+        assert len(chunks) == 2
+        assert diagnostics["mode"] == "heuristic"
+        assert diagnostics["confidence"] == 0.2
+        assert "fallback_applied" not in diagnostics
+
 
 
 class TestProcessBinaryFileMultiChunk:
@@ -490,6 +585,8 @@ class TestProcessBinaryFileAdditiveContract:
         assert "requires_ocr" in result
         assert "toc_confidence" in result
         assert "toc_resolution_mode" in result
+        assert "toc_offset" in result
+        assert "toc_evidence_pages" in result
         assert isinstance(result["warnings"], list)
         assert result["quality_state"] == "ok"
         assert set(result["quality_metrics"]) == {
@@ -501,6 +598,72 @@ class TestProcessBinaryFileAdditiveContract:
         assert result["requires_ocr"] is False
         assert result["toc_confidence"] is None
         assert result["toc_resolution_mode"] == "not_evaluated"
+        assert result["toc_offset"] is None
+        assert result["toc_evidence_pages"] == []
+
+    @pytest.mark.asyncio
+    async def test_process_binary_file_threads_toc_diagnostics(self, monkeypatch, tmp_path):
+        from local_read_mcp.server import app as server_app
+        from local_read_mcp.segmenter import Chunk
+
+        test_file = tmp_path / "sample.pdf"
+        test_file.write_text("fake pdf", encoding="utf-8")
+
+        class FakeBackend:
+            name = "Simple"
+            warning = None
+
+            def supports_format(self, format_name):
+                return True
+
+            def process(self, file_path, format_name, **kwargs):
+                return {
+                    "source": {"path": str(file_path), "format": format_name, "page_count": 1},
+                    "metadata": {},
+                    "blocks": {
+                        "block_00000000": {
+                            "type": "text",
+                            "page": 1,
+                            "bbox": [0, 0, 612, 792],
+                            "confidence": 0.9,
+                            "content": "content",
+                        }
+                    },
+                    "reading_order": ["block_00000000"],
+                }
+
+        class FakeRegistry:
+            def select_best(self, format_name=None):
+                return FakeBackend()
+
+            def get(self, backend_type):
+                return FakeBackend()
+
+        monkeypatch.setattr(server_app, "get_registry", lambda: FakeRegistry())
+        monkeypatch.setattr(
+            server_app,
+            "plan_chunks",
+            lambda **kwargs: (
+                [Chunk(phys_start=0, phys_end=0, title="single")],
+                {
+                    "mode": "heuristic",
+                    "confidence": 0.63,
+                    "offset": 3,
+                    "evidence_pages": [4, 8],
+                },
+            ),
+        )
+
+        result = await server_app.process_binary_file.fn(
+            file_path=str(test_file),
+            format="pdf",
+        )
+
+        assert result["success"] is True
+        assert result["toc_confidence"] == 0.63
+        assert result["toc_resolution_mode"] == "heuristic"
+        assert result["toc_offset"] == 3
+        assert result["toc_evidence_pages"] == [4, 8]
 
     @pytest.mark.asyncio
     async def test_process_binary_file_preserves_existing_additive_fields(self, monkeypatch, tmp_path):

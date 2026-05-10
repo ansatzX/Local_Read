@@ -212,5 +212,47 @@ class TestTocExtractorTitleKeywords:
         assert TocExtractor._title_keywords("") == []
 
 
+class TestTocExtractorDiagnostics:
+    """Diagnostics behavior for TOC resolution."""
+
+    def test_heuristic_resolution_emits_multi_anchor_diagnostics(self):
+        class FakePage:
+            def __init__(self, text):
+                self._text = text
+
+            def get_text(self):
+                return self._text
+
+            def get_label(self):
+                return ""
+
+        class FakeDoc:
+            def __init__(self):
+                self.page_count = 10
+                self._pages = [FakePage("no chapter here") for _ in range(10)]
+                self._pages[2] = FakePage("Chapter 1 Introduction")
+                self._pages[5] = FakePage("Chapter 2 Methods")
+                self._pages[8] = FakePage("Chapter 3 Results")
+
+            def get_toc(self):
+                return [
+                    [1, "Introduction", 1],
+                    [1, "Methods", 4],
+                    [1, "Results", 7],
+                ]
+
+            def __getitem__(self, idx):
+                return self._pages[idx]
+
+        extractor = TocExtractor()
+        chapters, diagnostics = extractor.extract(FakeDoc(), with_diagnostics=True)
+
+        assert diagnostics.mode == "heuristic"
+        assert 0.0 <= diagnostics.confidence <= 1.0
+        assert diagnostics.offset == 2
+        assert diagnostics.evidence_pages == [3, 6, 9]
+        assert [c.phys_index for c in chapters] == [2, 5, 8]
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

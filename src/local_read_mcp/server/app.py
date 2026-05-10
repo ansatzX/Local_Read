@@ -308,8 +308,6 @@ async def process_binary_file(
     if (
         page_range_mode != "physical"
         or strict_page_range
-        or enable_toc_auto_fallback
-        or toc_confidence_threshold != 0.55
         or fail_on_unreadable
         or skip_quality_check
     ):
@@ -324,6 +322,8 @@ async def process_binary_file(
         "requires_ocr": False,
         "toc_confidence": None,
         "toc_resolution_mode": "not_evaluated",
+        "toc_offset": None,
+        "toc_evidence_pages": [],
     }
 
     def _apply_additive_defaults(payload: dict[str, Any]) -> None:
@@ -339,6 +339,8 @@ async def process_binary_file(
         payload.setdefault("requires_ocr", additive_fields["requires_ocr"])
         payload.setdefault("toc_confidence", additive_fields["toc_confidence"])
         payload.setdefault("toc_resolution_mode", additive_fields["toc_resolution_mode"])
+        payload.setdefault("toc_offset", additive_fields["toc_offset"])
+        payload.setdefault("toc_evidence_pages", additive_fields["toc_evidence_pages"])
 
     def _extract_quality_text_from_intermediate(intermediate: Any) -> tuple[str, bool]:
         """Prefer raw extracted block text from intermediate output for quality scoring."""
@@ -435,7 +437,7 @@ async def process_binary_file(
                 existing_warnings.append(warning_text)
 
     # ── 3. Plan chunks (segmenter integration) ───────────────────
-    chunks = plan_chunks(
+    chunks_result = plan_chunks(
         file_path=file_path,
         format=format,
         backend_name=backend_instance.name,
@@ -443,7 +445,31 @@ async def process_binary_file(
         start_page=start_page,
         end_page=end_page,
         page_batch_size=page_batch_size,
+        enable_toc_auto_fallback=enable_toc_auto_fallback,
+        toc_confidence_threshold=toc_confidence_threshold,
+        return_diagnostics=True,
     )
+    chunk_diagnostics: dict[str, Any] = {
+        "mode": "not_evaluated",
+        "confidence": None,
+        "offset": None,
+        "evidence_pages": [],
+    }
+    if isinstance(chunks_result, tuple) and len(chunks_result) == 2:
+        chunks, planned_diagnostics = chunks_result
+        if isinstance(planned_diagnostics, dict):
+            chunk_diagnostics.update(planned_diagnostics)
+    else:
+        chunks = chunks_result
+
+    additive_fields["toc_confidence"] = chunk_diagnostics.get("confidence")
+    additive_fields["toc_resolution_mode"] = str(chunk_diagnostics.get("mode", "not_evaluated"))
+    additive_fields["toc_offset"] = chunk_diagnostics.get("offset")
+    evidence_pages = chunk_diagnostics.get("evidence_pages")
+    additive_fields["toc_evidence_pages"] = evidence_pages if isinstance(evidence_pages, list) else []
+    fallback_reason = chunk_diagnostics.get("fallback_reason")
+    if isinstance(fallback_reason, str) and fallback_reason:
+        warnings.append(fallback_reason)
 
     # ── 4. Create output directory ───────────────────────────────
     output_manager = OutputManager()
@@ -692,6 +718,8 @@ async def process_binary_file(
             "requires_ocr": False,
             "toc_confidence": None,
             "toc_resolution_mode": "not_evaluated",
+            "toc_offset": None,
+            "toc_evidence_pages": [],
         }
 
 
