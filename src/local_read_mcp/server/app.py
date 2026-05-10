@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import re
+import hashlib
 from pathlib import Path
 from typing import Any
 
@@ -86,7 +87,10 @@ def detect_format(file_path: str) -> str | None:
 
 
 _IMAGE_NAME_PATTERN = re.compile(r"page(\d+)_img(\d+)", re.IGNORECASE)
+_IMAGE_KIND_PATTERN = re.compile(r"page\d+_img\d+_([a-zA-Z0-9_]+)\.", re.IGNORECASE)
 _FIGURE_REF_PATTERN = re.compile(r"\bFigure\s+(\d+)\b", re.IGNORECASE)
+_CHUNK_HEADER_PATTERN = re.compile(r"^# .*\(pages\s+(\d+)[–-](\d+)\)\s*$")
+_FIGURE_CAPTION_PATTERN = re.compile(r"^\s*\*{0,2}(?:Figure|Fig\.?)\s+(\d+)\s*[:.\-]\s*(.+?)\s*\*{0,2}\s*$", re.IGNORECASE)
 
 
 def _build_image_metadata(
@@ -118,6 +122,19 @@ def _build_image_metadata(
             # Convert 0-based physical page index to human-readable 1-based page number.
             item["estimated_pdf_page"] = phys_start + page_in_chunk + 1
 
+        kind_match = _IMAGE_KIND_PATTERN.search(image_path.name)
+        if kind_match:
+            token = kind_match.group(1).lower()
+            if token == "raster":
+                item["kind"] = "raster"
+            elif token in {"cluster", "drawing", "image_block"}:
+                item["kind"] = "vector_region"
+                item["region_source"] = token
+            else:
+                item["kind"] = token
+        else:
+            item["kind"] = "unknown"
+
         metadata.append(item)
 
     return metadata
@@ -127,6 +144,217 @@ def _extract_figure_references(markdown: str) -> list[int]:
     """Extract unique figure numbers referenced in markdown text."""
     figure_numbers = {int(m.group(1)) for m in _FIGURE_REF_PATTERN.finditer(markdown or "")}
     return sorted(figure_numbers)
+
+
+def _compute_sha256(path: str) -> str | None:
+    try:
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except Exception:
+        return None
+
+
+def _classify_candidate_labels(item: dict[str, Any]) -> list[str]:
+    labels: set[str] = set()
+    kind = str(item.get("kind", "unknown"))
+    region_source = str(item.get("region_source", "")).lower()
+    path_text = str(item.get("path", "")).lower()
+
+    if kind == "raster":
+        labels.add("figure_like")
+    elif kind == "vector_region":
+        if region_source == "image_block":
+            labels.add("figure_like")
+        elif region_source in {"drawing", "cluster"}:
+            labels.add("unknown")
+    else:
+        labels.add("unknown")
+
+    if "table" in path_text:
+        labels.add("table_like")
+    if "formula" in path_text or "math" in path_text:
+        labels.add("formula_like")
+    if "icon" in path_text:
+        labels.add("icon_like")
+
+    if not labels:
+        labels.add("unknown")
+    return sorted(labels)
+
+
+def _extract_figure_slots(markdown: str) -> list[dict[str, Any]]:
+    slots: list[dict[str, Any]] = []
+    if not markdown:
+        return slots
+
+    current_page_hint: int | None = None
+    lines = markdown.splitlines()
+
+    for line_no, line in enumerate(lines, start=1):
+        header_match = _CHUNK_HEADER_PATTERN.match(line.strip())
+        if header_match:
+            current_page_hint = int(header_match.group(1))
+            continue
+
+        caption_match = _FIGURE_CAPTION_PATTERN.match(line)
+        if caption_match:
+            slots.append(
+                {
+                    "slot_id": f"slot_{len(slots) + 1:04d}",
+                    "figure_number": int(caption_match.group(1)),
+                    "caption": caption_match.group(2).strip(),
+                    "line_no": line_no,
+                    "page_hint": current_page_hint,
+                }
+            )
+            continue
+
+        for ref in _FIGURE_REF_PATTERN.finditer(line):
+            slots.append(
+                {
+                    "slot_id": f"slot_{len(slots) + 1:04d}",
+                    "figure_number": int(ref.group(1)),
+                    "caption": "",
+                    "line_no": line_no,
+                    "page_hint": current_page_hint,
+                }
+            )
+
+    return slots
+
+
+def _build_image_manifest(image_metadata: list[dict[str, Any]], markdown: str) -> dict[str, Any]:
+    ordered_items = sorted(
+        image_metadata,
+        key=lambda m: (
+            int(m.get("estimated_pdf_page", m.get("phys_start", 0) + 1)),
+            int(m.get("page_in_chunk", 0)),
+            int(m.get("image_index_in_page", 0)),
+            str(m.get("path", "")),
+        ),
+    )
+
+    groups: dict[str, dict[str, Any]] = {}
+    unknown_key_index = 0
+    for idx, item in enumerate(ordered_items):
+        source_path = str(item.get("linked_path") or item.get("path") or "")
+        checksum = _compute_sha256(source_path) if source_path else None
+        if checksum is None:
+            unknown_key_index += 1
+            checksum = f"missing_{unknown_key_index:06d}"
+
+        occurrence = {
+            "path": str(item.get("path", "")),
+            "linked_path": str(item.get("linked_path", "")) if item.get("linked_path") else None,
+            "kind": str(item.get("kind", "unknown")),
+            "region_source": item.get("region_source"),
+            "chunk_index": item.get("chunk_index"),
+            "chunk_title": item.get("chunk_title"),
+            "estimated_pdf_page": item.get("estimated_pdf_page"),
+            "page_in_chunk": item.get("page_in_chunk"),
+            "image_index_in_page": item.get("image_index_in_page"),
+            "order_index": idx,
+            "labels": _classify_candidate_labels(item),
+        }
+
+        if checksum not in groups:
+            groups[checksum] = {
+                "checksum_sha256": checksum if not checksum.startswith("missing_") else None,
+                "representative_path": occurrence["linked_path"] or occurrence["path"],
+                "kinds": sorted({occurrence["kind"]}),
+                "labels": occurrence["labels"][:],
+                "occurrences": [occurrence],
+            }
+        else:
+            g = groups[checksum]
+            g["occurrences"].append(occurrence)
+            g["kinds"] = sorted(set(g.get("kinds", [])) | {occurrence["kind"]})
+            g["labels"] = sorted(set(g.get("labels", [])) | set(occurrence["labels"]))
+
+    canonical_images: list[dict[str, Any]] = []
+    for idx, group in enumerate(
+        sorted(
+            groups.values(),
+            key=lambda g: (
+                int(g["occurrences"][0].get("estimated_pdf_page") or 10**9),
+                int(g["occurrences"][0].get("order_index", 0)),
+            ),
+        ),
+        start=1,
+    ):
+        first = group["occurrences"][0]
+        canonical_images.append(
+            {
+                "canonical_image_id": f"image_{idx:04d}",
+                "checksum_sha256": group["checksum_sha256"],
+                "representative_path": group["representative_path"],
+                "kinds": group["kinds"],
+                "labels": group["labels"],
+                "first_seen": {
+                    "page": first.get("estimated_pdf_page"),
+                    "y": None,
+                    "x": None,
+                    "order_index": first.get("order_index"),
+                },
+                "occurrences": group["occurrences"],
+            }
+        )
+
+    figure_slots = _extract_figure_slots(markdown)
+    figure_matches: list[dict[str, Any]] = []
+    for slot in figure_slots:
+        page_hint = slot.get("page_hint")
+        fig_num = slot.get("figure_number")
+        ranked: list[tuple[float, dict[str, Any]]] = []
+        for cidx, image in enumerate(canonical_images, start=1):
+            score = 0.0
+            candidate_page = image.get("first_seen", {}).get("page")
+            if isinstance(page_hint, int) and isinstance(candidate_page, int):
+                dist = abs(candidate_page - page_hint)
+                score += max(0.0, 1.0 - (min(dist, 12) / 12.0)) * 0.7
+            labels = set(image.get("labels", []))
+            if "figure_like" in labels:
+                score += 0.2
+            if isinstance(fig_num, int) and fig_num == cidx:
+                score += 0.1
+            ranked.append((score, image))
+        ranked.sort(key=lambda x: x[0], reverse=True)
+        top = [
+            {
+                "canonical_image_id": c["canonical_image_id"],
+                "score": round(s, 4),
+                "first_seen_page": c.get("first_seen", {}).get("page"),
+                "labels": c.get("labels", []),
+                "kinds": c.get("kinds", []),
+            }
+            for s, c in ranked[:3]
+            if s > 0
+        ]
+        figure_matches.append(
+            {
+                "slot_id": slot["slot_id"],
+                "figure_number": slot["figure_number"],
+                "caption": slot.get("caption", ""),
+                "page_hint": slot.get("page_hint"),
+                "candidates": top,
+            }
+        )
+
+    return {
+        "version": "1",
+        "dedupe": {"method": "sha256"},
+        "totals": {
+            "raw_occurrences": len(ordered_items),
+            "unique_images": len(canonical_images),
+            "figure_slots": len(figure_slots),
+        },
+        "images": canonical_images,
+        "figure_slots": figure_slots,
+        "figure_matches": figure_matches,
+    }
 
 
 if VISION_ENABLED:
@@ -591,6 +819,14 @@ async def process_binary_file(
                 )
                 result["image_count"] = len(image_metadata)
                 result["image_metadata"] = image_metadata
+                image_manifest = _build_image_manifest(image_metadata, result.get("markdown_content", ""))
+                image_manifest_path = output_path / "image_manifest.json"
+                with open(image_manifest_path, "w", encoding="utf-8") as f:
+                    json.dump(image_manifest, f, ensure_ascii=False, indent=2)
+                result["image_manifest"] = image_manifest
+                result["files"]["image_manifest"] = str(image_manifest_path)
+                result["figure_slots"] = image_manifest.get("figure_slots", [])
+                result["figure_image_matches"] = image_manifest.get("figure_matches", [])
             figure_refs = _extract_figure_references(result.get("markdown_content", ""))
             result["figure_reference_count"] = len(figure_refs)
             result["figure_references"] = figure_refs
@@ -758,6 +994,14 @@ async def process_binary_file(
         if image_metadata_all:
             result_payload["image_count"] = len(image_metadata_all)
             result_payload["image_metadata"] = image_metadata_all
+            image_manifest = _build_image_manifest(image_metadata_all, merged_md)
+            image_manifest_path = output_path / "image_manifest.json"
+            with open(image_manifest_path, "w", encoding="utf-8") as f:
+                json.dump(image_manifest, f, ensure_ascii=False, indent=2)
+            files_result["image_manifest"] = str(image_manifest_path)
+            result_payload["image_manifest"] = image_manifest
+            result_payload["figure_slots"] = image_manifest.get("figure_slots", [])
+            result_payload["figure_image_matches"] = image_manifest.get("figure_matches", [])
         figure_refs = _extract_figure_references(merged_md)
         result_payload["figure_reference_count"] = len(figure_refs)
         result_payload["figure_references"] = figure_refs

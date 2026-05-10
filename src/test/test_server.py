@@ -7,6 +7,7 @@ This module contains tests for the FastMCP server implementation.
 import sys
 import asyncio
 import importlib
+import json
 from pathlib import Path
 
 import pytest
@@ -461,6 +462,46 @@ class TestProcessBinaryFileMultiChunk:
         ]
         assert all(p.is_symlink() for p in linked)
         assert all(p.resolve().parent.name == "images" for p in linked)
+        assert Path(result["files"]["image_manifest"]).exists()
+        manifest = json.loads(Path(result["files"]["image_manifest"]).read_text(encoding="utf-8"))
+        assert manifest["totals"]["raw_occurrences"] == 2
+        assert manifest["totals"]["unique_images"] == 1
+        assert len(manifest["images"][0]["occurrences"]) == 2
+
+    def test_image_manifest_extracts_figure_slots_and_candidates(self, tmp_path):
+        from local_read_mcp.server import app as app_module
+
+        img1 = tmp_path / "page000_img0000_raster.png"
+        img2 = tmp_path / "page000_img0001_image_block.png"
+        img1.write_bytes(b"img-a")
+        img2.write_bytes(b"img-b")
+
+        metadata = [
+            {
+                "path": str(img1),
+                "linked_path": str(img1),
+                "kind": "raster",
+                "estimated_pdf_page": 1,
+                "page_in_chunk": 0,
+                "image_index_in_page": 0,
+            },
+            {
+                "path": str(img2),
+                "linked_path": str(img2),
+                "kind": "vector_region",
+                "region_source": "image_block",
+                "estimated_pdf_page": 1,
+                "page_in_chunk": 0,
+                "image_index_in_page": 1,
+            },
+        ]
+        markdown = "# Ch 1  (pages 1–2)\n\nFigure 1: Test figure caption\n"
+        manifest = app_module._build_image_manifest(metadata, markdown)
+
+        assert manifest["totals"]["raw_occurrences"] == 2
+        assert manifest["totals"]["unique_images"] == 2
+        assert len(manifest["figure_slots"]) >= 1
+        assert manifest["figure_matches"][0]["candidates"]
 
 
 class TestProcessBinaryFileAdditiveContract:

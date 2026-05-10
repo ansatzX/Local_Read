@@ -99,6 +99,22 @@ Quality warnings are added to the response `warnings` list. Existing backend-pro
 
 Merged chunk markdown deduplicates only overlap-window content between adjacent overlapping chunks (no global document dedupe). This reduces repeated paragraphs caused by chunk overlap while preserving non-overlap repeats.
 
+## Image Manifest and Matching
+
+When PDF image extraction is enabled, `process_binary_file` now builds a top-level image manifest:
+
+- `image_manifest.json` under the output directory
+- checksum-based dedupe (`sha256`) across chunk outputs
+- canonical image groups with all occurrences preserved (no default denoising)
+- kind-aware metadata (`raster`, `vector_region`, etc.)
+
+The response may include:
+- `image_manifest` (inline object)
+- `figure_slots` (text-derived figure references/captions from merged markdown)
+- `figure_image_matches` (ranked candidate mappings from slots to canonical images)
+
+This creates a stable bridge between chunked extraction and downstream figure alignment workflows.
+
 ## MinerU Integration
 
 MinerU is an external dependency (`pip install local-read-mcp[mineru]`). Models (~4.5GB total) are downloaded by MinerU's own tool, configured via `mineru.json` in the project root. The backend sets `MINERU_TOOLS_CONFIG_JSON` automatically at import time.
