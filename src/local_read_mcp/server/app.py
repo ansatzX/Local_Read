@@ -388,6 +388,21 @@ def _build_image_manifest(image_metadata: list[dict[str, Any]], markdown: str) -
                 }
             )
 
+    near_duplicate_index: dict[str, dict[str, Any]] = {}
+    for group in near_duplicate_groups:
+        members = group.get("members", [])
+        if not isinstance(members, list):
+            continue
+        canonical_ids = [m.get("canonical_image_id") for m in members if isinstance(m, dict)]
+        normalized_ids = [cid for cid in canonical_ids if isinstance(cid, str)]
+        for cid in normalized_ids:
+            near_duplicate_index[cid] = {
+                "group_id": group.get("group_id"),
+                "member_ids": normalized_ids,
+                "method": group.get("method"),
+                "threshold": group.get("threshold"),
+            }
+
     figure_slots = _extract_figure_slots(markdown)
     figure_matches: list[dict[str, Any]] = []
     for slot in figure_slots:
@@ -414,6 +429,7 @@ def _build_image_manifest(image_metadata: list[dict[str, Any]], markdown: str) -
                 "first_seen_page": c.get("first_seen", {}).get("page"),
                 "labels": c.get("labels", []),
                 "kinds": c.get("kinds", []),
+                "near_duplicate_group": near_duplicate_index.get(c["canonical_image_id"]),
             }
             for s, c in ranked[:3]
             if s > 0

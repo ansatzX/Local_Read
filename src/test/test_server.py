@@ -543,6 +543,47 @@ class TestProcessBinaryFileMultiChunk:
         assert manifest["totals"]["near_duplicate_groups"] == 1
         assert len(manifest["near_duplicate_groups"][0]["members"]) == 2
 
+    def test_figure_match_candidate_includes_near_duplicate_group(self, monkeypatch, tmp_path):
+        from local_read_mcp.server import app as app_module
+
+        img1 = tmp_path / "page000_img0000_raster.png"
+        img2 = tmp_path / "page001_img0000_raster.png"
+        img1.write_bytes(b"img-a")
+        img2.write_bytes(b"img-b")
+
+        def fake_phash(path: str, hash_size: int = 8):
+            return "aaaaaaaaaaaaaaaa"
+
+        monkeypatch.setattr(app_module, "_compute_image_phash", fake_phash)
+
+        metadata = [
+            {
+                "path": str(img1),
+                "linked_path": str(img1),
+                "kind": "raster",
+                "estimated_pdf_page": 1,
+                "page_in_chunk": 0,
+                "image_index_in_page": 0,
+            },
+            {
+                "path": str(img2),
+                "linked_path": str(img2),
+                "kind": "raster",
+                "estimated_pdf_page": 2,
+                "page_in_chunk": 0,
+                "image_index_in_page": 0,
+            },
+        ]
+        markdown = "# Ch 1  (pages 1–2)\n\nFigure 1: Test\n"
+        manifest = app_module._build_image_manifest(metadata, markdown)
+
+        assert manifest["figure_matches"]
+        candidates = manifest["figure_matches"][0]["candidates"]
+        assert candidates
+        first = candidates[0]
+        assert first["near_duplicate_group"] is not None
+        assert len(first["near_duplicate_group"]["member_ids"]) == 2
+
 
 class TestProcessBinaryFileAdditiveContract:
     """Tests for additive API params and response keys."""
