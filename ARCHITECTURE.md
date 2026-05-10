@@ -104,6 +104,8 @@ Merged chunk markdown deduplicates only overlap-window content between adjacent 
 When PDF image extraction is enabled, `process_binary_file` now builds a top-level image manifest:
 
 - `image_manifest.json` under the output directory
+- `figure_mapping_template.json` as editable mapping skeleton
+- `figure_mapping_decision.example.json` as a minimal worked example
 - checksum-based dedupe (`sha256`) across chunk outputs
 - optional perceptual near-duplicate grouping (`dHash`) when Pillow is available
 - canonical image groups with all occurrences preserved (no default denoising)
@@ -113,6 +115,9 @@ The response may include:
 - `image_manifest` (inline object)
 - `figure_slots` (text-derived figure references/captions from merged markdown)
 - `figure_image_matches` (ranked candidate mappings from slots to canonical images)
+- `files.figure_mapping_template`
+- `files.figure_mapping_decision_example`
+- `files.figure_mapping_validation` and `figure_mapping_validation` when a user-provided `figure_mapping_decision.json` exists and is validated
 
 This creates a stable bridge between chunked extraction and downstream figure alignment workflows.
 
