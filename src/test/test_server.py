@@ -470,6 +470,9 @@ class TestProcessBinaryFileMultiChunk:
         assert Path(result["files"]["figure_mapping_template"]).exists()
         template = json.loads(Path(result["files"]["figure_mapping_template"]).read_text(encoding="utf-8"))
         assert "entries" in template
+        assert Path(result["files"]["figure_mapping_decision_example"]).exists()
+        example = json.loads(Path(result["files"]["figure_mapping_decision_example"]).read_text(encoding="utf-8"))
+        assert "entries" in example
 
     def test_image_manifest_extracts_figure_slots_and_candidates(self, tmp_path):
         from local_read_mcp.server import app as app_module
@@ -618,6 +621,31 @@ class TestProcessBinaryFileMultiChunk:
         assert "selected_image_id" in entry
         assert "decision_status" in entry
         assert entry["decision_status"] == "pending"
+
+    def test_figure_mapping_decision_example_uses_template_candidates(self, monkeypatch, tmp_path):
+        from local_read_mcp.server import app as app_module
+
+        img = tmp_path / "page000_img0000_raster.png"
+        img.write_bytes(b"img-a")
+        metadata = [
+            {
+                "path": str(img),
+                "linked_path": str(img),
+                "kind": "raster",
+                "estimated_pdf_page": 1,
+                "page_in_chunk": 0,
+                "image_index_in_page": 0,
+            }
+        ]
+        markdown = "# Ch 1  (pages 1–2)\n\nFigure 1: Test\n"
+        manifest = app_module._build_image_manifest(metadata, markdown)
+        template = app_module._build_figure_mapping_template(manifest)
+        example = app_module._build_figure_mapping_decision_example(template)
+
+        assert example["source_template"] == "figure_mapping_template.json"
+        assert example["entries"]
+        assert example["entries"][0]["slot_id"] == template["entries"][0]["slot_id"]
+        assert "selected_image_id" in example["entries"][0]
 
 
 class TestProcessBinaryFileAdditiveContract:

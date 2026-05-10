@@ -503,6 +503,40 @@ def _build_figure_mapping_template(image_manifest: dict[str, Any]) -> dict[str, 
     }
 
 
+def _build_figure_mapping_decision_example(template: dict[str, Any]) -> dict[str, Any]:
+    entries = template.get("entries", []) if isinstance(template, dict) else []
+    example_entries: list[dict[str, Any]] = []
+    for entry in entries[:2] if isinstance(entries, list) else []:
+        if not isinstance(entry, dict):
+            continue
+        candidates = entry.get("candidates", [])
+        primary_id = entry.get("primary_candidate_id")
+        selected_image_id = primary_id
+        selected_cluster_id = None
+        if isinstance(candidates, list) and candidates:
+            top = candidates[0] if isinstance(candidates[0], dict) else {}
+            selected_image_id = top.get("canonical_image_id", primary_id)
+            group = top.get("near_duplicate_group") if isinstance(top, dict) else None
+            if isinstance(group, dict):
+                selected_cluster_id = group.get("group_id")
+
+        example_entries.append(
+            {
+                "slot_id": entry.get("slot_id"),
+                "selected_image_id": selected_image_id,
+                "selected_cluster_id": selected_cluster_id,
+                "decision_status": "matched" if selected_image_id else "ambiguous",
+                "notes": "Example decision entry. Adjust based on your review.",
+            }
+        )
+
+    return {
+        "version": "1",
+        "source_template": "figure_mapping_template.json",
+        "entries": example_entries,
+    }
+
+
 def _validate_figure_mapping_decision(
     image_manifest: dict[str, Any],
     decision: dict[str, Any],
@@ -1038,9 +1072,14 @@ async def process_binary_file(
                 figure_mapping_template_path = output_path / "figure_mapping_template.json"
                 with open(figure_mapping_template_path, "w", encoding="utf-8") as f:
                     json.dump(figure_mapping_template, f, ensure_ascii=False, indent=2)
+                figure_mapping_example = _build_figure_mapping_decision_example(figure_mapping_template)
+                figure_mapping_example_path = output_path / "figure_mapping_decision.example.json"
+                with open(figure_mapping_example_path, "w", encoding="utf-8") as f:
+                    json.dump(figure_mapping_example, f, ensure_ascii=False, indent=2)
                 result["image_manifest"] = image_manifest
                 result["files"]["image_manifest"] = str(image_manifest_path)
                 result["files"]["figure_mapping_template"] = str(figure_mapping_template_path)
+                result["files"]["figure_mapping_decision_example"] = str(figure_mapping_example_path)
                 result["figure_slots"] = image_manifest.get("figure_slots", [])
                 result["figure_image_matches"] = image_manifest.get("figure_matches", [])
             figure_refs = _extract_figure_references(result.get("markdown_content", ""))
@@ -1218,8 +1257,13 @@ async def process_binary_file(
             figure_mapping_template_path = output_path / "figure_mapping_template.json"
             with open(figure_mapping_template_path, "w", encoding="utf-8") as f:
                 json.dump(figure_mapping_template, f, ensure_ascii=False, indent=2)
+            figure_mapping_example = _build_figure_mapping_decision_example(figure_mapping_template)
+            figure_mapping_example_path = output_path / "figure_mapping_decision.example.json"
+            with open(figure_mapping_example_path, "w", encoding="utf-8") as f:
+                json.dump(figure_mapping_example, f, ensure_ascii=False, indent=2)
             files_result["image_manifest"] = str(image_manifest_path)
             files_result["figure_mapping_template"] = str(figure_mapping_template_path)
+            files_result["figure_mapping_decision_example"] = str(figure_mapping_example_path)
             result_payload["image_manifest"] = image_manifest
             result_payload["figure_slots"] = image_manifest.get("figure_slots", [])
             result_payload["figure_image_matches"] = image_manifest.get("figure_matches", [])
