@@ -29,6 +29,7 @@ from .orchestrator import (
     merge_chunk_markdowns,
     plan_chunks,
     process_and_save,
+    resolve_page_range,
     save_structural_toc,
 )
 from .vision import call_vision_api
@@ -254,11 +255,16 @@ async def process_binary_file(
         format: Override auto-detected format.
         backend: Backend (auto/simple/vlm-hybrid). Default: auto.
         chapter_split: "auto" (split >30p), "chapter", N (fixed pages), False (off).
-        start_page: 0-based start page.
-        end_page: 0-based end page.
+        start_page: Inclusive 0-based start page. In `physical` mode this is a physical page
+            index. In `logical` mode (PDF only) this is a logical page number mapped to a
+            physical index before chunking.
+        end_page: Inclusive end page. In `physical` mode this is a physical 0-based index.
+            In `logical` mode (PDF only) this is a logical page number mapped to physical.
+            `None` means open-ended (through the last page).
         page_batch_size: Pages per batch (default: 64).
-        page_range_mode: Page interpretation mode. Default: physical.
-        strict_page_range: Fail when page range cannot be resolved exactly.
+        page_range_mode: `physical` or `logical` (case-insensitive). Non-PDF inputs use
+            physical semantics.
+        strict_page_range: Disable chapter splitting and process only resolved span.
         enable_toc_auto_fallback: Enable TOC auto fallback behavior.
         toc_confidence_threshold: TOC confidence threshold.
         fail_on_unreadable: Fail when unreadable segments are encountered.
@@ -305,15 +311,14 @@ async def process_binary_file(
             f"Backend '{backend_instance.name}' does not support format '{format}'"
         )
 
-    if (
-        page_range_mode != "physical"
-        or strict_page_range
-        or fail_on_unreadable
-        or skip_quality_check
-    ):
+    if fail_on_unreadable or skip_quality_check:
         warnings.append(
             "Reliability controls are accepted but enforced in later phases; current behavior remains additive-only."
         )
+
+    normalized_page_range_mode = (page_range_mode or "physical").lower()
+    if normalized_page_range_mode not in {"physical", "logical"}:
+        normalized_page_range_mode = "physical"
 
     additive_fields: dict[str, Any] = {
         "warnings": warnings,
@@ -324,6 +329,14 @@ async def process_binary_file(
         "toc_resolution_mode": "not_evaluated",
         "toc_offset": None,
         "toc_evidence_pages": [],
+        "resolved_start_page": start_page,
+        "resolved_end_page": end_page,
+        "resolved_page_map": {
+            "mode": normalized_page_range_mode,
+            "strategy": "identity",
+            "requested": {"start_page": start_page, "end_page": end_page},
+            "resolved": {"start_page": start_page, "end_page": end_page},
+        },
     }
 
     def _apply_additive_defaults(payload: dict[str, Any]) -> None:
@@ -341,6 +354,9 @@ async def process_binary_file(
         payload.setdefault("toc_resolution_mode", additive_fields["toc_resolution_mode"])
         payload.setdefault("toc_offset", additive_fields["toc_offset"])
         payload.setdefault("toc_evidence_pages", additive_fields["toc_evidence_pages"])
+        payload.setdefault("resolved_start_page", additive_fields["resolved_start_page"])
+        payload.setdefault("resolved_end_page", additive_fields["resolved_end_page"])
+        payload.setdefault("resolved_page_map", additive_fields["resolved_page_map"])
 
     def _extract_quality_text_from_intermediate(intermediate: Any) -> tuple[str, bool]:
         """Prefer raw extracted block text from intermediate output for quality scoring."""
@@ -436,14 +452,36 @@ async def process_binary_file(
             if warning_text not in existing_warnings:
                 existing_warnings.append(warning_text)
 
-    # ── 3. Plan chunks (segmenter integration) ───────────────────
+    # ── 3. Resolve page range and plan chunks (segmenter integration) ──
+    resolved_start_page, resolved_end_page, resolved_page_map = resolve_page_range(
+        file_path=file_path,
+        format=format,
+        start_page=start_page,
+        end_page=end_page,
+        page_range_mode=normalized_page_range_mode,
+    )
+    additive_fields["resolved_start_page"] = resolved_start_page
+    additive_fields["resolved_end_page"] = resolved_end_page
+    additive_fields["resolved_page_map"] = resolved_page_map
+
+    effective_start_page = start_page
+    effective_end_page = end_page
+    effective_chapter_split = chapter_split
+    if normalized_page_range_mode == "logical":
+        effective_start_page = resolved_start_page
+        effective_end_page = resolved_end_page
+    if strict_page_range:
+        effective_chapter_split = False
+        effective_start_page = resolved_start_page
+        effective_end_page = resolved_end_page
+
     chunks_result = plan_chunks(
         file_path=file_path,
         format=format,
         backend_name=backend_instance.name,
-        chapter_split=chapter_split,
-        start_page=start_page,
-        end_page=end_page,
+        chapter_split=effective_chapter_split,
+        start_page=effective_start_page,
+        end_page=effective_end_page,
         page_batch_size=page_batch_size,
         enable_toc_auto_fallback=enable_toc_auto_fallback,
         toc_confidence_threshold=toc_confidence_threshold,
@@ -720,6 +758,9 @@ async def process_binary_file(
             "toc_resolution_mode": "not_evaluated",
             "toc_offset": None,
             "toc_evidence_pages": [],
+            "resolved_start_page": additive_fields.get("resolved_start_page"),
+            "resolved_end_page": additive_fields.get("resolved_end_page"),
+            "resolved_page_map": additive_fields.get("resolved_page_map"),
         }
 
 

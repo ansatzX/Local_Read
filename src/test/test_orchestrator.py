@@ -1,7 +1,84 @@
 """Unit tests for server orchestrator helpers."""
 
+import builtins
 from pathlib import Path
 from types import SimpleNamespace
+
+
+def test_resolve_page_range_logical_uses_extractor_mapping(monkeypatch):
+    """Logical page mode should resolve through TOC/page-label aware extractor mapping."""
+    from local_read_mcp.server import orchestrator
+
+    observed = {}
+
+    class FakeDoc:
+        page_count = 200
+
+        def close(self):
+            return None
+
+    class FakeExtractor:
+        def resolve_logical_range(self, doc, start_page, end_page):
+            observed["start_page"] = start_page
+            observed["end_page"] = end_page
+            return 70, 75, {
+                "mode": "logical",
+                "strategy": "toc_offset",
+                "offset": 10,
+                "requested": {"start_page": 60, "end_page": 65},
+                "resolved": {"start_page": 70, "end_page": 75},
+            }
+
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "fitz",
+        SimpleNamespace(open=lambda path: FakeDoc()),
+    )
+    monkeypatch.setattr(orchestrator, "TocExtractor", FakeExtractor)
+
+    start_page, end_page, page_map = orchestrator.resolve_page_range(
+        file_path="sample.pdf",
+        format="pdf",
+        start_page=60,
+        end_page=65,
+        page_range_mode="logical",
+    )
+
+    assert observed["start_page"] == 60
+    assert observed["end_page"] == 65
+    assert start_page == 70
+    assert end_page == 75
+    assert page_map["strategy"] == "toc_offset"
+    assert page_map["resolved"]["start_page"] == 70
+    assert page_map["resolved"]["end_page"] == 75
+
+
+def test_resolve_page_range_logical_without_fitz_keeps_open_ended_range(monkeypatch):
+    """When fitz is unavailable, logical open-ended ranges should remain open-ended."""
+    from local_read_mcp.server import orchestrator
+
+    original_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "fitz":
+            raise ImportError("fitz not available")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    start_page, end_page, page_map = orchestrator.resolve_page_range(
+        file_path="sample.pdf",
+        format="pdf",
+        start_page=3,
+        end_page=None,
+        page_range_mode="logical",
+    )
+
+    assert start_page == 2
+    assert end_page is None
+    assert page_map["strategy"] == "logical_minus_one"
+    assert page_map["resolved"]["start_page"] == 2
+    assert page_map["resolved"]["end_page"] is None
 
 
 def test_process_and_save_slices_pdf_chunk_without_name_error(monkeypatch, tmp_path):

@@ -4,7 +4,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from statistics import median
-from typing import Optional
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -305,3 +305,104 @@ class TocExtractor:
         if chapters:
             logger.info("Found %d chapter heading(s) via text scan.", len(chapters))
         return chapters
+
+    def resolve_logical_range(
+        self,
+        doc,
+        start_page: int | None,
+        end_page: int | None,
+    ) -> tuple[int, int, dict[str, Any]]:
+        """Resolve a logical page span to physical 0-based page indices."""
+        total_pages = int(getattr(doc, "page_count", 0) or 0)
+        if total_pages <= 0:
+            return 0, 0, {
+                "mode": "logical",
+                "strategy": "empty_document",
+                "requested": {"start_page": start_page, "end_page": end_page},
+                "resolved": {"start_page": 0, "end_page": 0},
+                "offset": None,
+                "toc_resolution_mode": "not_evaluated",
+                "toc_confidence": None,
+                "toc_evidence_pages": [],
+            }
+
+        requested_start = 1 if start_page is None else int(start_page)
+        requested_end = total_pages if end_page is None else int(end_page)
+
+        extracted = self.extract(doc, with_diagnostics=True)
+        if isinstance(extracted, tuple):
+            chapters, diagnostics = extracted
+        else:
+            chapters = extracted
+            diagnostics = None
+
+        label_map: dict[int, int] = {}
+        for i in range(total_pages):
+            try:
+                label = doc[i].get_label()
+            except Exception:
+                label = None
+            logical = self._parse_numeric_label(label)
+            if logical is not None and logical not in label_map:
+                label_map[logical] = i
+
+        chapter_map: dict[int, int] = {}
+        for chapter in chapters:
+            logical = int(chapter.logical_page)
+            physical = int(chapter.phys_index)
+            if logical not in chapter_map:
+                chapter_map[logical] = physical
+
+        offsets = [phys - (logical - 1) for logical, phys in chapter_map.items()]
+        offset = diagnostics.offset if diagnostics is not None else None
+        if offset is None and offsets:
+            offset = int(round(median(offsets)))
+
+        def _clamp(page_index: int) -> int:
+            return max(0, min(page_index, total_pages - 1))
+
+        def _resolve_single(logical_page: int) -> tuple[int, str]:
+            if logical_page in label_map:
+                return _clamp(label_map[logical_page]), "page_labels"
+            if logical_page in chapter_map:
+                return _clamp(chapter_map[logical_page]), "toc_map"
+            if offset is not None:
+                return _clamp((logical_page - 1) + int(offset)), "toc_offset"
+            return _clamp(logical_page - 1), "logical_minus_one"
+
+        start_phys, start_strategy = _resolve_single(requested_start)
+        end_phys, end_strategy = _resolve_single(requested_end)
+        if start_phys > end_phys:
+            start_phys, end_phys = end_phys, start_phys
+
+        strategy = start_strategy if start_strategy == end_strategy else f"{start_strategy}+{end_strategy}"
+        return start_phys, end_phys, {
+            "mode": "logical",
+            "strategy": strategy,
+            "requested": {"start_page": requested_start, "end_page": requested_end},
+            "resolved": {"start_page": start_phys, "end_page": end_phys},
+            "offset": offset,
+            "toc_resolution_mode": diagnostics.mode if diagnostics is not None else "not_evaluated",
+            "toc_confidence": diagnostics.confidence if diagnostics is not None else None,
+            "toc_evidence_pages": diagnostics.evidence_pages if diagnostics is not None else [],
+            "label_hits": {
+                "start": requested_start in label_map,
+                "end": requested_end in label_map,
+            },
+            "chapter_hits": {
+                "start": requested_start in chapter_map,
+                "end": requested_end in chapter_map,
+            },
+        }
+
+    @staticmethod
+    def _parse_numeric_label(label: object) -> int | None:
+        """Parse plain integer page labels (e.g. '12')."""
+        if label is None:
+            return None
+        text = str(label).strip()
+        if not text:
+            return None
+        if text.isdigit():
+            return int(text)
+        return None

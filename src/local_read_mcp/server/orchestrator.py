@@ -14,6 +14,75 @@ from ..segmenter import Chunk, ChunkPlanner, TocExtractor
 logger = logging.getLogger(__name__)
 
 
+def resolve_page_range(
+    file_path: str,
+    format: str,
+    start_page: int | None,
+    end_page: int | None,
+    page_range_mode: str = "physical",
+) -> tuple[int | None, int | None, dict[str, Any]]:
+    """Resolve user page range to physical 0-based pages for processing."""
+    mode = (page_range_mode or "physical").lower()
+    if mode not in {"physical", "logical"}:
+        mode = "physical"
+
+    mapping: dict[str, Any] = {
+        "mode": mode,
+        "strategy": "identity" if mode == "physical" else "logical_minus_one",
+        "requested": {"start_page": start_page, "end_page": end_page},
+        "resolved": {"start_page": start_page, "end_page": end_page},
+    }
+
+    if format != "pdf":
+        return start_page, end_page, mapping
+
+    try:
+        import fitz  # noqa: PLC0415
+    except ImportError:
+        if mode == "logical":
+            fallback_start = 0 if start_page is None else max(0, int(start_page) - 1)
+            fallback_end = None if end_page is None else max(fallback_start, int(end_page) - 1)
+            mapping["strategy"] = "logical_minus_one"
+            mapping["resolved"] = {"start_page": fallback_start, "end_page": fallback_end}
+            return fallback_start, fallback_end, mapping
+        return start_page, end_page, mapping
+
+    try:
+        doc = fitz.open(file_path)
+    except Exception:
+        return start_page, end_page, mapping
+
+    total_pages = int(getattr(doc, "page_count", 0) or 0)
+    try:
+        if total_pages <= 0:
+            mapping["strategy"] = "empty_document"
+            mapping["resolved"] = {"start_page": 0, "end_page": 0}
+            return 0, 0, mapping
+
+        if mode == "logical":
+            extractor = TocExtractor()
+            resolved_start, resolved_end, logical_map = extractor.resolve_logical_range(
+                doc, start_page, end_page
+            )
+            if isinstance(logical_map, dict):
+                mapping.update(logical_map)
+            mapping["mode"] = "logical"
+            mapping["resolved"] = {"start_page": resolved_start, "end_page": resolved_end}
+            return resolved_start, resolved_end, mapping
+
+        resolved_start = 0 if start_page is None else int(start_page)
+        resolved_end = (total_pages - 1) if end_page is None else int(end_page)
+        resolved_start = max(0, min(resolved_start, total_pages - 1))
+        resolved_end = max(0, min(resolved_end, total_pages - 1))
+        if resolved_start > resolved_end:
+            resolved_start, resolved_end = resolved_end, resolved_start
+        mapping["strategy"] = "clamped_physical"
+        mapping["resolved"] = {"start_page": resolved_start, "end_page": resolved_end}
+        return resolved_start, resolved_end, mapping
+    finally:
+        doc.close()
+
+
 def plan_chunks(
     file_path: str,
     format: str,
