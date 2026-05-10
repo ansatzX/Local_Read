@@ -157,6 +157,45 @@ def _compute_sha256(path: str) -> str | None:
         return None
 
 
+def _compute_image_phash(path: str, hash_size: int = 8) -> str | None:
+    """Compute a lightweight perceptual hash (dHash) for an image."""
+    try:
+        from PIL import Image  # type: ignore
+    except Exception:
+        return None
+
+    try:
+        with Image.open(path) as img:
+            gray = img.convert("L").resize((hash_size + 1, hash_size))
+            pixels = list(gray.getdata())
+    except Exception:
+        return None
+
+    bits: list[int] = []
+    width = hash_size + 1
+    for row in range(hash_size):
+        offset = row * width
+        for col in range(hash_size):
+            left = pixels[offset + col]
+            right = pixels[offset + col + 1]
+            bits.append(1 if left > right else 0)
+
+    value = 0
+    for bit in bits:
+        value = (value << 1) | bit
+    hex_len = (hash_size * hash_size) // 4
+    return f"{value:0{hex_len}x}"
+
+
+def _phash_hamming_distance(left: str, right: str) -> int | None:
+    if not left or not right or len(left) != len(right):
+        return None
+    try:
+        return (int(left, 16) ^ int(right, 16)).bit_count()
+    except Exception:
+        return None
+
+
 def _classify_candidate_labels(item: dict[str, Any]) -> list[str]:
     labels: set[str] = set()
     kind = str(item.get("kind", "unknown"))
@@ -239,9 +278,13 @@ def _build_image_manifest(image_metadata: list[dict[str, Any]], markdown: str) -
 
     groups: dict[str, dict[str, Any]] = {}
     unknown_key_index = 0
+    phash_seen = False
     for idx, item in enumerate(ordered_items):
         source_path = str(item.get("linked_path") or item.get("path") or "")
         checksum = _compute_sha256(source_path) if source_path else None
+        phash = _compute_image_phash(source_path) if source_path else None
+        if phash:
+            phash_seen = True
         if checksum is None:
             unknown_key_index += 1
             checksum = f"missing_{unknown_key_index:06d}"
@@ -258,11 +301,13 @@ def _build_image_manifest(image_metadata: list[dict[str, Any]], markdown: str) -
             "image_index_in_page": item.get("image_index_in_page"),
             "order_index": idx,
             "labels": _classify_candidate_labels(item),
+            "phash": phash,
         }
 
         if checksum not in groups:
             groups[checksum] = {
                 "checksum_sha256": checksum if not checksum.startswith("missing_") else None,
+                "phash": phash,
                 "representative_path": occurrence["linked_path"] or occurrence["path"],
                 "kinds": sorted({occurrence["kind"]}),
                 "labels": occurrence["labels"][:],
@@ -273,6 +318,8 @@ def _build_image_manifest(image_metadata: list[dict[str, Any]], markdown: str) -
             g["occurrences"].append(occurrence)
             g["kinds"] = sorted(set(g.get("kinds", [])) | {occurrence["kind"]})
             g["labels"] = sorted(set(g.get("labels", [])) | set(occurrence["labels"]))
+            if g.get("phash") is None and phash is not None:
+                g["phash"] = phash
 
     canonical_images: list[dict[str, Any]] = []
     for idx, group in enumerate(
@@ -290,6 +337,7 @@ def _build_image_manifest(image_metadata: list[dict[str, Any]], markdown: str) -
             {
                 "canonical_image_id": f"image_{idx:04d}",
                 "checksum_sha256": group["checksum_sha256"],
+                "phash": group.get("phash"),
                 "representative_path": group["representative_path"],
                 "kinds": group["kinds"],
                 "labels": group["labels"],
@@ -302,6 +350,43 @@ def _build_image_manifest(image_metadata: list[dict[str, Any]], markdown: str) -
                 "occurrences": group["occurrences"],
             }
         )
+
+    near_duplicate_groups: list[dict[str, Any]] = []
+    if phash_seen and canonical_images:
+        threshold = 8
+        visited: set[int] = set()
+        for i, anchor in enumerate(canonical_images):
+            if i in visited:
+                continue
+            a_hash = anchor.get("phash")
+            if not isinstance(a_hash, str):
+                continue
+            members = [i]
+            for j in range(i + 1, len(canonical_images)):
+                b_hash = canonical_images[j].get("phash")
+                if not isinstance(b_hash, str):
+                    continue
+                dist = _phash_hamming_distance(a_hash, b_hash)
+                if dist is not None and dist <= threshold:
+                    members.append(j)
+            if len(members) <= 1:
+                continue
+            for midx in members:
+                visited.add(midx)
+            near_duplicate_groups.append(
+                {
+                    "group_id": f"near_dup_{len(near_duplicate_groups) + 1:04d}",
+                    "method": "dhash",
+                    "threshold": threshold,
+                    "members": [
+                        {
+                            "canonical_image_id": canonical_images[midx]["canonical_image_id"],
+                            "phash": canonical_images[midx].get("phash"),
+                        }
+                        for midx in members
+                    ],
+                }
+            )
 
     figure_slots = _extract_figure_slots(markdown)
     figure_matches: list[dict[str, Any]] = []
@@ -345,13 +430,15 @@ def _build_image_manifest(image_metadata: list[dict[str, Any]], markdown: str) -
 
     return {
         "version": "1",
-        "dedupe": {"method": "sha256"},
+        "dedupe": {"method": "sha256", "phash_method": "dhash", "phash_enabled": phash_seen},
         "totals": {
             "raw_occurrences": len(ordered_items),
             "unique_images": len(canonical_images),
             "figure_slots": len(figure_slots),
+            "near_duplicate_groups": len(near_duplicate_groups),
         },
         "images": canonical_images,
+        "near_duplicate_groups": near_duplicate_groups,
         "figure_slots": figure_slots,
         "figure_matches": figure_matches,
     }

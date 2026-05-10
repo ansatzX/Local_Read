@@ -105,6 +105,7 @@ When PDF image extraction is enabled, `process_binary_file` now builds a top-lev
 
 - `image_manifest.json` under the output directory
 - checksum-based dedupe (`sha256`) across chunk outputs
+- optional perceptual near-duplicate grouping (`dHash`) when Pillow is available
 - canonical image groups with all occurrences preserved (no default denoising)
 - kind-aware metadata (`raster`, `vector_region`, etc.)
 
