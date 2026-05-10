@@ -114,3 +114,94 @@ def test_merge_chunk_markdowns_dedupes_only_overlap_window():
     assert "# Chapter 1  (pages 1–3)" in merged
     assert "# Chapter 2  (pages 3–5)" in merged
     assert "# Chapter 3  (pages 6–7)" in merged
+
+
+def test_merge_chunk_markdowns_keeps_short_single_line_overlap():
+    """A short single-line duplicate should not be trimmed."""
+    from local_read_mcp.server import orchestrator
+
+    short_line = "Figure 1."
+    merged = orchestrator.merge_chunk_markdowns(
+        [
+            {
+                "title": "Part A",
+                "phys_start": 0,
+                "phys_end": 2,
+                "markdown_content": "\n".join(["A intro", short_line]),
+            },
+            {
+                "title": "Part B",
+                "phys_start": 2,
+                "phys_end": 4,
+                "markdown_content": "\n".join([short_line, "B unique"]),
+            },
+        ]
+    )
+
+    assert merged.count(short_line) == 2
+    assert "B unique" in merged
+
+
+def test_merge_chunk_markdowns_keeps_repeated_boilerplate_without_page_overlap():
+    """Repeated boilerplate in non-overlapping chunks should remain untouched."""
+    from local_read_mcp.server import orchestrator
+
+    boilerplate = "Company Internal Use Only"
+    merged = orchestrator.merge_chunk_markdowns(
+        [
+            {
+                "title": "S1",
+                "phys_start": 0,
+                "phys_end": 1,
+                "markdown_content": "\n".join([boilerplate, "S1 body"]),
+            },
+            {
+                "title": "S2",
+                "phys_start": 2,
+                "phys_end": 3,
+                "markdown_content": "\n".join([boilerplate, "S2 body"]),
+            },
+        ]
+    )
+
+    assert merged.count(boilerplate) == 2
+    assert "S1 body" in merged
+    assert "S2 body" in merged
+
+
+def test_merge_chunk_markdowns_resets_dedupe_context_after_error_chunk():
+    """After a failed chunk, the next successful chunk should not dedupe against stale context."""
+    from local_read_mcp.server import orchestrator
+
+    overlap_text = "\n".join(
+        [
+            "Shared overlap line A with enough characters.",
+            "Shared overlap line B with enough characters.",
+        ]
+    )
+    merged = orchestrator.merge_chunk_markdowns(
+        [
+            {
+                "title": "Chunk 1",
+                "phys_start": 0,
+                "phys_end": 2,
+                "markdown_content": "\n".join(["C1 intro", overlap_text]),
+            },
+            {
+                "title": "Chunk 2",
+                "phys_start": 2,
+                "phys_end": 4,
+                "error": "backend failed",
+            },
+            {
+                "title": "Chunk 3",
+                "phys_start": 2,
+                "phys_end": 5,
+                "markdown_content": "\n".join([overlap_text, "C3 unique"]),
+            },
+        ]
+    )
+
+    assert merged.count(overlap_text) == 2
+    assert "processing failed" in merged
+    assert "C3 unique" in merged
