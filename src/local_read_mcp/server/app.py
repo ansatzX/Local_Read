@@ -20,6 +20,7 @@ from fastmcp import FastMCP
 
 from ..backends import BackendType, get_registry
 from ..config import get_config as _get_config
+from ..converters.pdf import evaluate_pdf_text_quality
 from ..output_manager import OutputManager
 from ..index_generator import IndexGenerator
 from ..markdown_converter import MarkdownConverter
@@ -339,6 +340,49 @@ async def process_binary_file(
         payload.setdefault("toc_confidence", additive_fields["toc_confidence"])
         payload.setdefault("toc_resolution_mode", additive_fields["toc_resolution_mode"])
 
+    def _quality_warning_for_state(state: str) -> str | None:
+        if state == "warn":
+            return "Extracted PDF text quality is degraded; review output before downstream use."
+        if state == "unreadable":
+            return "Extracted PDF text appears unreadable; OCR is likely required."
+        return None
+
+    def _apply_pdf_quality(payload: dict[str, Any], page_count: int | None) -> None:
+        if format != "pdf":
+            return
+
+        existing_state = payload.get("quality_state")
+        existing_metrics = payload.get("quality_metrics")
+        has_existing = (
+            existing_state in {"ok", "warn", "unreadable"}
+            and isinstance(existing_metrics, dict)
+            and (
+                bool(existing_metrics)
+                or existing_state == "ok"
+            )
+        )
+
+        if has_existing:
+            payload["requires_ocr"] = existing_state == "unreadable"
+            warning_text = _quality_warning_for_state(existing_state)
+        else:
+            quality = evaluate_pdf_text_quality(
+                str(payload.get("markdown_content", "")),
+                page_count,
+            )
+            payload["quality_state"] = quality["quality_state"]
+            payload["quality_metrics"] = quality["quality_metrics"]
+            payload["requires_ocr"] = quality["requires_ocr"]
+            warning_text = quality.get("quality_warning")
+
+        if warning_text:
+            existing_warnings = payload.get("warnings")
+            if not isinstance(existing_warnings, list):
+                existing_warnings = []
+                payload["warnings"] = existing_warnings
+            if warning_text not in existing_warnings:
+                existing_warnings.append(warning_text)
+
     # ── 3. Plan chunks (segmenter integration) ───────────────────
     chunks = plan_chunks(
         file_path=file_path,
@@ -416,6 +460,16 @@ async def process_binary_file(
             figure_refs = _extract_figure_references(result.get("markdown_content", ""))
             result["figure_reference_count"] = len(figure_refs)
             result["figure_references"] = figure_refs
+            page_count = None
+            intermediate = result.get("intermediate")
+            if isinstance(intermediate, dict):
+                page_count = intermediate.get("source", {}).get("page_count")
+            if page_count is None:
+                try:
+                    page_count = max(1, int(result.get("phys_end", 0)) - int(result.get("phys_start", 0)) + 1)
+                except Exception:
+                    page_count = 1
+            _apply_pdf_quality(result, page_count)
             _apply_additive_defaults(result)
             return result
 
@@ -550,6 +604,12 @@ async def process_binary_file(
             "chunk_count": len(chunks),
             "files": files_result,
         }
+        merged_page_count = None
+        if isinstance(merged_intermediate, dict):
+            merged_page_count = merged_intermediate.get("source", {}).get("page_count")
+        result_payload["markdown_content"] = merged_md
+        _apply_pdf_quality(result_payload, merged_page_count)
+        result_payload.pop("markdown_content", None)
         _apply_additive_defaults(result_payload)
         if image_metadata_all:
             result_payload["image_count"] = len(image_metadata_all)

@@ -15,6 +15,75 @@ from .section_extractor import extract_sections_from_markdown
 from .latex_fixer import fix_latex_formulas
 
 
+def evaluate_pdf_text_quality(
+    text_content: str,
+    page_count: Optional[int],
+) -> dict[str, Any]:
+    """Evaluate extracted PDF text quality with deterministic heuristics."""
+    text = text_content or ""
+    total_chars = len(text)
+    pages = page_count if isinstance(page_count, int) and page_count > 0 else 1
+
+    if total_chars == 0:
+        metrics = {
+            "control_char_ratio": 0.0,
+            "printable_ratio": 0.0,
+            "alpha_numeric_density": 0.0,
+            "avg_readable_chars_per_page": 0.0,
+        }
+        return {
+            "quality_state": "unreadable",
+            "quality_metrics": metrics,
+            "requires_ocr": True,
+            "quality_warning": "Extracted PDF text is empty; OCR is likely required.",
+        }
+
+    allowed_whitespace = {"\n", "\r", "\t"}
+    control_count = sum(
+        1 for ch in text if (ord(ch) < 32 and ch not in allowed_whitespace) or ord(ch) == 127
+    )
+    readable_count = sum(1 for ch in text if ch.isprintable() or ch in allowed_whitespace)
+    alnum_count = sum(1 for ch in text if ch.isalnum())
+
+    control_char_ratio = control_count / total_chars
+    printable_ratio = readable_count / total_chars
+    alpha_numeric_density = alnum_count / total_chars
+    avg_readable_chars_per_page = readable_count / pages
+
+    metrics = {
+        "control_char_ratio": round(control_char_ratio, 4),
+        "printable_ratio": round(printable_ratio, 4),
+        "alpha_numeric_density": round(alpha_numeric_density, 4),
+        "avg_readable_chars_per_page": round(avg_readable_chars_per_page, 2),
+    }
+
+    state = "ok"
+    warning = None
+    if (
+        control_char_ratio >= 0.30
+        or printable_ratio < 0.60
+        or alpha_numeric_density < 0.10
+        or avg_readable_chars_per_page < 40
+    ):
+        state = "unreadable"
+        warning = "Extracted PDF text appears unreadable; OCR is likely required."
+    elif (
+        control_char_ratio >= 0.12
+        or printable_ratio < 0.85
+        or alpha_numeric_density < 0.25
+        or avg_readable_chars_per_page < 180
+    ):
+        state = "warn"
+        warning = "Extracted PDF text quality is degraded; review output before downstream use."
+
+    return {
+        "quality_state": state,
+        "quality_metrics": metrics,
+        "requires_ocr": state == "unreadable",
+        "quality_warning": warning,
+    }
+
+
 def _rect_from_any(rect_obj: Any) -> Optional[tuple[float, float, float, float]]:
     """Convert an arbitrary rect object into normalized (x0, y0, x1, y1)."""
     if rect_obj is None:
@@ -410,6 +479,7 @@ def PdfConverter(
 
         # Apply content limit (200,000 characters)
         text_content = apply_content_limit(text_content)
+        quality_info = evaluate_pdf_text_quality(text_content, pdf_page_count)
 
         # Prepare metadata
         metadata = {}
@@ -435,6 +505,11 @@ def PdfConverter(
                 "conversion_timestamp": time.time(),
                 "pdf_page_count": pdf_page_count,  # Add actual PDF page count
             }
+        metadata["quality_state"] = quality_info["quality_state"]
+        metadata["quality_metrics"] = quality_info["quality_metrics"]
+        metadata["requires_ocr"] = quality_info["requires_ocr"]
+        if quality_info["quality_warning"]:
+            metadata["quality_warning"] = quality_info["quality_warning"]
 
         if extract_sections:
             sections = extract_sections_from_markdown(text_content)

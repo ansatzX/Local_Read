@@ -448,6 +448,7 @@ class TestProcessBinaryFileAdditiveContract:
                 return True
 
             def process(self, file_path, format_name, **kwargs):
+                readable = ("This is readable content with many words and numbers 12345. " * 20).strip()
                 return {
                     "source": {"path": str(file_path), "format": format_name, "page_count": 1},
                     "metadata": {},
@@ -457,7 +458,7 @@ class TestProcessBinaryFileAdditiveContract:
                             "page": 1,
                             "bbox": [0, 0, 612, 792],
                             "confidence": 0.9,
-                            "content": "content",
+                            "content": readable,
                         }
                     },
                     "reading_order": ["block_00000000"],
@@ -490,8 +491,13 @@ class TestProcessBinaryFileAdditiveContract:
         assert "toc_confidence" in result
         assert "toc_resolution_mode" in result
         assert isinstance(result["warnings"], list)
-        assert result["quality_state"] == "not_evaluated"
-        assert result["quality_metrics"] == {}
+        assert result["quality_state"] == "ok"
+        assert set(result["quality_metrics"]) == {
+            "control_char_ratio",
+            "printable_ratio",
+            "alpha_numeric_density",
+            "avg_readable_chars_per_page",
+        }
         assert result["requires_ocr"] is False
         assert result["toc_confidence"] is None
         assert result["toc_resolution_mode"] == "not_evaluated"
@@ -535,7 +541,7 @@ class TestProcessBinaryFileAdditiveContract:
                 "markdown_path": tmp_path / "output.md",
                 "index_path": tmp_path / "index.json",
                 "markdown_content": "content",
-                "quality_state": "warn",
+                "quality_state": "unreadable",
                 "quality_metrics": {"control_char_ratio": 0.3},
                 "requires_ocr": True,
                 "toc_confidence": 0.8,
@@ -553,12 +559,71 @@ class TestProcessBinaryFileAdditiveContract:
 
         result = await server_app.process_binary_file.fn(file_path=str(test_file), format="pdf")
 
-        assert result["quality_state"] == "warn"
+        assert result["quality_state"] == "unreadable"
         assert result["quality_metrics"] == {"control_char_ratio": 0.3}
         assert result["requires_ocr"] is True
         assert result["toc_confidence"] == 0.8
         assert result["toc_resolution_mode"] == "heuristic"
         assert "backend warning" in result["warnings"]
+        assert any("OCR is likely required" in warning for warning in result["warnings"])
+
+    @pytest.mark.asyncio
+    async def test_process_binary_file_adds_quality_warning_when_unreadable(self, monkeypatch, tmp_path):
+        from local_read_mcp.server import app as server_app
+        from local_read_mcp.segmenter import Chunk
+
+        test_file = tmp_path / "sample.pdf"
+        test_file.write_text("fake pdf", encoding="utf-8")
+
+        class FakeBackend:
+            name = "Simple"
+            warning = None
+
+            def supports_format(self, format_name):
+                return True
+
+            def process(self, file_path, format_name, **kwargs):
+                return {
+                    "source": {"path": str(file_path), "format": format_name, "page_count": 1},
+                    "metadata": {},
+                    "blocks": {},
+                    "reading_order": [],
+                }
+
+        class FakeRegistry:
+            def select_best(self, format_name=None):
+                return FakeBackend()
+
+            def get(self, backend_type):
+                return FakeBackend()
+
+        def fake_process_and_save(**kwargs):
+            return {
+                "title": "single",
+                "phys_start": 0,
+                "phys_end": 0,
+                "intermediate_path": tmp_path / "intermediate.json",
+                "markdown_path": tmp_path / "output.md",
+                "index_path": tmp_path / "index.json",
+                "intermediate": {"source": {"page_count": 1}},
+                "markdown_content": "\x01\x02\x03\x04\x05",
+                "warnings": [],
+            }
+
+        monkeypatch.setattr(server_app, "get_registry", lambda: FakeRegistry())
+        monkeypatch.setattr(
+            server_app,
+            "plan_chunks",
+            lambda **kwargs: [Chunk(phys_start=0, phys_end=0, title="single")],
+        )
+        monkeypatch.setattr(server_app, "process_and_save", fake_process_and_save)
+
+        result = await server_app.process_binary_file.fn(file_path=str(test_file), format="pdf")
+
+        assert result["quality_state"] == "unreadable"
+        assert result["requires_ocr"] is True
+        assert result["quality_metrics"]["control_char_ratio"] >= 0.3
+        assert any("OCR is likely required" in warning for warning in result["warnings"])
 
     @pytest.mark.asyncio
     async def test_process_binary_file_warns_when_non_default_reliability_controls_passed(self, monkeypatch, tmp_path):

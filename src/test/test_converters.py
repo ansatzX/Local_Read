@@ -318,6 +318,43 @@ class TestLatexFixes:
 class TestPdfEnhancements:
     """Tests for PDF enhancement features."""
 
+    def test_pdf_quality_unreadable_for_control_char_heavy_text(self, monkeypatch, tmp_path):
+        """PdfConverter marks control-char-heavy extraction as unreadable."""
+        import local_read_mcp.converters.pdf as pdf_module
+
+        pdf_file = tmp_path / "sample.pdf"
+        pdf_file.write_bytes(b"%PDF-1.4\n")
+
+        noisy_text = ("\x01\x02\x03\x04" * 120) + "abc"
+        monkeypatch.setattr(pdf_module, "extract_text_pymupdf", lambda path: noisy_text)
+        monkeypatch.setattr(pdf_module, "fix_latex_formulas", lambda text: text)
+        monkeypatch.setattr(pdf_module, "apply_content_limit", lambda text: text)
+
+        result = pdf_module.PdfConverter(str(pdf_file))
+
+        assert result.metadata["quality_state"] == "unreadable"
+        assert result.metadata["requires_ocr"] is True
+        assert result.metadata["quality_metrics"]["control_char_ratio"] >= 0.3
+        assert "quality_warning" in result.metadata
+
+    def test_pdf_quality_ok_for_normal_text(self, monkeypatch, tmp_path):
+        """PdfConverter marks normal extraction as ok."""
+        import local_read_mcp.converters.pdf as pdf_module
+
+        pdf_file = tmp_path / "sample.pdf"
+        pdf_file.write_bytes(b"%PDF-1.4\n")
+
+        readable_text = ("This is readable extracted PDF text with words and numbers 12345. " * 40).strip()
+        monkeypatch.setattr(pdf_module, "extract_text_pymupdf", lambda path: readable_text)
+        monkeypatch.setattr(pdf_module, "fix_latex_formulas", lambda text: text)
+        monkeypatch.setattr(pdf_module, "apply_content_limit", lambda text: text)
+
+        result = pdf_module.PdfConverter(str(pdf_file))
+
+        assert result.metadata["quality_state"] == "ok"
+        assert result.metadata["requires_ocr"] is False
+        assert result.metadata["quality_metrics"]["printable_ratio"] == 1.0
+        assert "quality_warning" not in result.metadata
 
     def test_document_converter_result_new_fields(self):
         """Test that DocumentConverterResult has new fields."""
