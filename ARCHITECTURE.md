@@ -118,6 +118,11 @@ The response may include:
 - `files.figure_mapping_template`
 - `files.figure_mapping_decision_example`
 - `files.figure_mapping_validation` and `figure_mapping_validation` when a user-provided `figure_mapping_decision.json` exists and is validated
+- multi-chunk health fields: `chunk_success_count`, `chunk_failure_count`, `all_chunks_failed` (additive; `success` semantics unchanged)
+
+Decision validation enforces minimal shape:
+- `figure_mapping_decision.json` must be an object
+- `entries` must be a list
 
 This creates a stable bridge between chunked extraction and downstream figure alignment workflows.
 

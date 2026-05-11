@@ -792,6 +792,142 @@ class TestProcessBinaryFileAdditiveContract:
         assert "resolved_page_map" in result
 
     @pytest.mark.asyncio
+    async def test_validate_figure_mapping_decision_requires_entries_list(self):
+        from local_read_mcp.server import app as server_app
+
+        manifest = {
+            "figure_slots": [{"slot_id": "slot_0001"}],
+            "images": [{"canonical_image_id": "image_0001"}],
+            "near_duplicate_groups": [{"group_id": "near_dup_0001"}],
+        }
+        decision = {"version": "1", "entries": "not-a-list"}
+        validation = server_app._validate_figure_mapping_decision(manifest, decision)
+
+        assert validation["valid"] is False
+        assert any(issue.get("error") == "entries must be a list" for issue in validation["issues"])
+
+    @pytest.mark.asyncio
+    async def test_process_binary_file_multichunk_reports_chunk_health(self, monkeypatch, tmp_path):
+        from local_read_mcp.server import app as server_app
+        from local_read_mcp.segmenter import Chunk
+
+        test_file = tmp_path / "sample.pdf"
+        test_file.write_text("fake pdf", encoding="utf-8")
+
+        class FakeBackend:
+            name = "Simple"
+            warning = None
+
+            def supports_format(self, format_name):
+                return True
+
+            def process(self, file_path, format_name, **kwargs):
+                return {
+                    "source": {"path": str(file_path), "format": format_name, "page_count": 1},
+                    "metadata": {},
+                    "blocks": {},
+                    "reading_order": [],
+                }
+
+        class FakeRegistry:
+            def select_best(self, format_name=None):
+                return FakeBackend()
+
+            def get(self, backend_type):
+                return FakeBackend()
+
+        def fake_process_and_save(**kwargs):
+            chunk = kwargs["chunk"]
+            if chunk.title == "bad":
+                raise RuntimeError("forced failure")
+            return {
+                "title": chunk.title,
+                "phys_start": chunk.phys_start,
+                "phys_end": chunk.phys_end,
+                "intermediate_path": tmp_path / f"{chunk.title}_intermediate.json",
+                "markdown_path": tmp_path / f"{chunk.title}_output.md",
+                "index_path": tmp_path / f"{chunk.title}_index.json",
+                "intermediate": {
+                    "source": {"page_count": 1},
+                    "metadata": {},
+                    "blocks": {},
+                    "reading_order": [],
+                },
+                "markdown_content": f"content-{chunk.title}",
+            }
+
+        monkeypatch.setattr(server_app, "get_registry", lambda: FakeRegistry())
+        monkeypatch.setattr(
+            server_app,
+            "plan_chunks",
+            lambda **kwargs: [
+                Chunk(phys_start=0, phys_end=0, title="ok"),
+                Chunk(phys_start=1, phys_end=1, title="bad"),
+            ],
+        )
+        monkeypatch.setattr(server_app, "process_and_save", fake_process_and_save)
+
+        result = await server_app.process_binary_file.fn(file_path=str(test_file), format="pdf")
+
+        assert result["success"] is True
+        assert result["chunk_count"] == 2
+        assert result["chunk_success_count"] == 1
+        assert result["chunk_failure_count"] == 1
+        assert result["all_chunks_failed"] is False
+
+    @pytest.mark.asyncio
+    async def test_process_binary_file_multichunk_all_failed_flag(self, monkeypatch, tmp_path):
+        from local_read_mcp.server import app as server_app
+        from local_read_mcp.segmenter import Chunk
+
+        test_file = tmp_path / "sample.pdf"
+        test_file.write_text("fake pdf", encoding="utf-8")
+
+        class FakeBackend:
+            name = "Simple"
+            warning = None
+
+            def supports_format(self, format_name):
+                return True
+
+            def process(self, file_path, format_name, **kwargs):
+                return {
+                    "source": {"path": str(file_path), "format": format_name, "page_count": 1},
+                    "metadata": {},
+                    "blocks": {},
+                    "reading_order": [],
+                }
+
+        class FakeRegistry:
+            def select_best(self, format_name=None):
+                return FakeBackend()
+
+            def get(self, backend_type):
+                return FakeBackend()
+
+        def fake_process_and_save(**kwargs):
+            raise RuntimeError("forced failure")
+
+        monkeypatch.setattr(server_app, "get_registry", lambda: FakeRegistry())
+        monkeypatch.setattr(
+            server_app,
+            "plan_chunks",
+            lambda **kwargs: [
+                Chunk(phys_start=0, phys_end=0, title="bad1"),
+                Chunk(phys_start=1, phys_end=1, title="bad2"),
+            ],
+        )
+        monkeypatch.setattr(server_app, "process_and_save", fake_process_and_save)
+
+        result = await server_app.process_binary_file.fn(file_path=str(test_file), format="pdf")
+
+        assert result["success"] is True
+        assert result["chunk_count"] == 2
+        assert result["chunk_success_count"] == 0
+        assert result["chunk_failure_count"] == 2
+        assert result["all_chunks_failed"] is True
+
+    @pytest.mark.asyncio
     async def test_process_binary_file_threads_toc_diagnostics(self, monkeypatch, tmp_path):
         from local_read_mcp.server import app as server_app
         from local_read_mcp.segmenter import Chunk

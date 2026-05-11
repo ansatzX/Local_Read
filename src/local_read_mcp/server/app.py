@@ -564,6 +564,18 @@ def _validate_figure_mapping_decision(
     image_manifest: dict[str, Any],
     decision: dict[str, Any],
 ) -> dict[str, Any]:
+    if not isinstance(decision, dict):
+        return {
+            "valid": False,
+            "issues": [{"error": "decision is not an object"}],
+            "summary": {
+                "entries": 0,
+                "matched": 0,
+                "ambiguous": 0,
+                "unmatched": 0,
+            },
+        }
+
     valid_slot_ids = {
         str(slot.get("slot_id"))
         for slot in (image_manifest.get("figure_slots", []) if isinstance(image_manifest.get("figure_slots"), list) else [])
@@ -584,13 +596,21 @@ def _validate_figure_mapping_decision(
         if isinstance(group, dict) and group.get("group_id") is not None
     }
 
-    entries = decision.get("entries", []) if isinstance(decision, dict) else []
+    entries_raw = decision.get("entries")
+    entries: list[Any] = []
     issues: list[dict[str, Any]] = []
     matched = 0
     ambiguous = 0
     unmatched = 0
 
-    for idx, entry in enumerate(entries if isinstance(entries, list) else []):
+    if entries_raw is None:
+        issues.append({"error": "entries is required"})
+    elif not isinstance(entries_raw, list):
+        issues.append({"error": "entries must be a list"})
+    else:
+        entries = entries_raw
+
+    for idx, entry in enumerate(entries):
         if not isinstance(entry, dict):
             issues.append({"index": idx, "error": "entry is not an object"})
             continue
@@ -617,7 +637,7 @@ def _validate_figure_mapping_decision(
         "valid": len(issues) == 0,
         "issues": issues,
         "summary": {
-            "entries": len(entries if isinstance(entries, list) else []),
+            "entries": len(entries),
             "matched": matched,
             "ambiguous": ambiguous,
             "unmatched": unmatched,
@@ -1262,6 +1282,9 @@ async def process_binary_file(
             "output_directory": str(output_path),
             "backend_used": backend_instance.name,
             "chunk_count": len(chunks),
+            "chunk_success_count": len(succeeded),
+            "chunk_failure_count": len(chunk_results) - len(succeeded),
+            "all_chunks_failed": len(succeeded) == 0,
             "files": files_result,
         }
         merged_page_count = None
