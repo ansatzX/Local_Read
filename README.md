@@ -6,12 +6,13 @@ MCP server for local document processing — structured extraction from PDFs, Of
 
 Tool exposure is startup-time conditional:
 - Always available: `process_binary_file`
-- Available only when vision config exists (`VISION_API_KEY` or `OPENAI_API_KEY`): `analyze_image`
+- Available only when vision config exists (`VISION_API_KEY` or `OPENAI_API_KEY`): `analyze_image`, `analyze_images_batch`
 
 | Tool | When to use |
 |------|-------------|
 | `process_binary_file` | Convert supported binary/document/archive files to structured output before reading. Saves to `.local_read_mcp/`. |
 | `analyze_image` | Analyze images via Vision API (Doubao, GPT-4o, etc.). Result saved to `.local_read_mcp/analysis/`. |
+| `analyze_images_batch` | Analyze multiple images with cache-aware batching. Results saved to `.local_read_mcp/analysis/`. |
 
 ## Quick Start
 
@@ -91,11 +92,16 @@ All results saved to `.local_read_mcp/<file>_<timestamp>/`:
 - `output.md` — converted markdown
 - `index.json` — section/table/figure index
 - `images/` — extracted images (when requested)
+- `image_manifest.json` — canonical image inventory with dedupe/occurrence metadata (when images extracted)
+- `figure_mapping_template.json` — slot-to-image mapping template for agent decisions
+- `figure_mapping_decision.example.json` — minimal example decision payload
 
-Figure extraction policy (current):
+Figure extraction and mapping policy (current):
 - PDF image extraction is intentionally recall-first: it extracts embedded rasters and suspicious vector/image regions.
-- No deduplication is applied.
-- TODO: page-level truth judgment (whether a page truly contains a figure) and duplicate discrimination quality evaluation.
+- Dedupe is checksum-based (`sha256`) with all occurrences preserved; no default denoising.
+- Optional perceptual near-duplicate grouping (`dHash`) is included when Pillow is available.
+- If user provides `figure_mapping_decision.json`, the server validates it and writes `figure_mapping_validation.json`.
+- Multi-chunk responses include additive health fields: `chunk_success_count`, `chunk_failure_count`, `all_chunks_failed` (`success` semantics unchanged).
 
 ## Development
 
