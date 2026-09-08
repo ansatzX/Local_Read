@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Simple performance benchmark for Local_Read_MCP backends.
+Simple performance benchmark for Local_Read backends.
 
 This script benchmarks the Simple backend performance with various file types.
 """
@@ -11,8 +11,8 @@ from pathlib import Path
 from typing import Dict, Any, List
 import statistics
 
-from src.local_read_mcp.backends import get_registry, BackendType
-from src.local_read_mcp.output_manager import OutputManager
+from local_read.backends import get_registry, BackendType
+from local_read.output_manager import OutputManager
 
 
 def create_test_text_file(path: Path, size_kb: int = 10) -> None:
@@ -190,12 +190,14 @@ def print_benchmark_results(results: Dict[str, Any]) -> None:
 def main():
     """Run benchmarks."""
     print("=" * 80)
-    print("Local_Read_MCP Backend Benchmark")
+    print("Local_Read Backend Benchmark")
     print("=" * 80)
 
     registry = get_registry()
 
-    with tempfile.TemporaryDirectory() as tmpdir:
+    benchmark_root = Path.cwd() / ".local_read_mcp" / "benchmarks"
+    benchmark_root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=benchmark_root) as tmpdir:
         tmp_path = Path(tmpdir)
 
         # Create test files

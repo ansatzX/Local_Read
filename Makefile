@@ -1,53 +1,23 @@
-# Makefile for local_read_mcp
+# Development artifacts remain local to the working project.
+export UV_CACHE_DIR := $(CURDIR)/.local_read_mcp/uv-cache
+export UV_PROJECT_ENVIRONMENT := $(CURDIR)/.local_read_mcp/dev-runtime
+export PYTHONDONTWRITEBYTECODE := 1
+export TMPDIR := $(CURDIR)/.local_read_mcp/tmp
 
-.PHONY: help install install-dev test format lint clean run
-
-# Default target
+.PHONY: help test coverage lint skill
 help:
-	@echo "Available targets:"
-	@echo "  install     - Install production dependencies"
-	@echo "  install-dev - Install development dependencies"
-	@echo "  test        - Run tests"
-	@echo "  format      - Format code with ruff"
-	@echo "  lint        - Lint code with ruff"
-	@echo "  check       - Format and lint (pre-commit check)"
-	@echo "  clean       - Clean build artifacts"
-	@echo "  run         - Run the MCP server (stdio)"
-	@echo "  run-http    - Run the MCP server (HTTP)"
+	@echo "make test | make coverage | make lint | make skill"
 
-# Install production dependencies
-install:
-	uv pip install -e .
-
-# Install development dependencies
-install-dev: install
-	uv pip install "pytest>=8.4.1" "pytest-asyncio>=1.0.0"
-
-# Run tests
 test:
-	uv run pytest src/test/ -v
+	mkdir -p "$(TMPDIR)"
+	uv run --locked --group dev pytest --basetemp=.local_read_mcp/pytest-tmp
 
-# Format code
-format:
-	uv run ruff format src/
+coverage:
+	mkdir -p "$(TMPDIR)" .local_read_mcp/coverage
+	uv run --locked --group dev pytest --basetemp=.local_read_mcp/pytest-tmp --cov --cov-report=term-missing --cov-report=html
 
-# Lint code
 lint:
-	uv run ruff check src/
+	uv run --locked --group dev ruff check src/ scripts/
 
-# Format and lint (pre-commit check)
-check: format lint
-
-# Clean build artifacts
-clean:
-	rm -rf build/ dist/ *.egg-info .pytest_cache .ruff_cache
-	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
-	find . -type f -name "*.pyc" -delete
-
-# Run the MCP server (stdio transport)
-run:
-	uv run python -m local_read_mcp.server
-
-# Run the MCP server (HTTP transport)
-run-http:
-	uv run python -m local_read_mcp.server --transport http --port 8080
+skill:
+	python3 scripts/package_skill.py

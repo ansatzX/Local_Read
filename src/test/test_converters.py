@@ -25,7 +25,7 @@ from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from local_read_mcp.converters import (
+from local_read.converters import (
     DocumentConverterResult,
     TextConverter,
     JsonConverter,
@@ -320,7 +320,7 @@ class TestPdfEnhancements:
 
     def test_pdf_quality_unreadable_for_control_char_heavy_text(self, monkeypatch, tmp_path):
         """PdfConverter marks control-char-heavy extraction as unreadable."""
-        import local_read_mcp.converters.pdf as pdf_module
+        import local_read.converters.pdf as pdf_module
 
         pdf_file = tmp_path / "sample.pdf"
         pdf_file.write_bytes(b"%PDF-1.4\n")
@@ -339,7 +339,7 @@ class TestPdfEnhancements:
 
     def test_pdf_quality_ok_for_normal_text(self, monkeypatch, tmp_path):
         """PdfConverter marks normal extraction as ok."""
-        import local_read_mcp.converters.pdf as pdf_module
+        import local_read.converters.pdf as pdf_module
 
         pdf_file = tmp_path / "sample.pdf"
         pdf_file.write_bytes(b"%PDF-1.4\n")
@@ -407,7 +407,7 @@ class TestPdfEnhancements:
 
     def test_pdf_render_images_uses_images_output_dir(self, monkeypatch, tmp_path):
         """PdfConverter with render_images=True should pass output_dir under images_output_dir."""
-        import local_read_mcp.converters.pdf as pdf_module
+        import local_read.converters.pdf as pdf_module
         from pathlib import Path
 
         pdf_file = tmp_path / 'sample.pdf'
@@ -432,7 +432,7 @@ class TestPdfEnhancements:
 
     def test_extract_pdf_images_includes_suspicious_vector_regions_no_dedupe(self, monkeypatch, tmp_path):
         """Vector suspicious regions should be extracted without dedupe (recall-first)."""
-        import local_read_mcp.converters.pdf as pdf_module
+        import local_read.converters.pdf as pdf_module
 
         class FakePixmap:
             def __init__(self, width=80, height=60):

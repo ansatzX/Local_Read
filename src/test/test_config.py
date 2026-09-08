@@ -1,8 +1,8 @@
-"""Tests for Local Read MCP configuration loading."""
+"""Tests for Local_Read configuration loading."""
 
 from pathlib import Path
 
-from local_read_mcp.config import Config
+from local_read.config import Config
 
 
 def test_config_loads_dotenv_from_explicit_project_root(monkeypatch, tmp_path):
@@ -41,3 +41,12 @@ def test_environment_overrides_dotenv(monkeypatch, tmp_path):
     config = Config(dotenv_path=tmp_path)
 
     assert config.api_key == "from-env"
+
+
+def test_installed_runtime_uses_skill_config_root(monkeypatch, tmp_path):
+    monkeypatch.setenv("LOCAL_READ_CONFIG_DIR", str(tmp_path))
+    monkeypatch.delenv("VISION_MODEL", raising=False)
+    (tmp_path / ".env").write_text("VISION_MODEL=portable-test-model\n", encoding="utf-8")
+    config = Config()
+    assert config.dotenv_path == tmp_path / ".env"
+    assert config.model == "portable-test-model"

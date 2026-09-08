@@ -9,8 +9,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from local_read_mcp.segmenter import Chapter, Chunk, ChunkPlanner
-from local_read_mcp.segmenter.toc_extractor import TocExtractor, _CHAPTER_PATTERNS
+from local_read.segmenter import Chapter, Chunk, ChunkPlanner
+from local_read.segmenter.toc_extractor import TocExtractor, _CHAPTER_PATTERNS
 
 
 class TestChapter:

@@ -224,12 +224,10 @@ data/
 
 apps/collect-trace/scripts/*/*.sh
 
-uv.lock
-
 # Temporary archive directory
 tmp_archive/
 
 # Claude Code
 .claude/
-docs/
-*.md
+
+# Project documentation and uv.lock are source files, not generated output.

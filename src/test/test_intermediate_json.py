@@ -18,7 +18,7 @@ from typing import Any, Dict, List
 # Import the module
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from local_read_mcp.intermediate_json import IntermediateJSONBuilder
+from local_read.intermediate_json import IntermediateJSONBuilder
 
 
 class TestIntermediateJSONBuilder:

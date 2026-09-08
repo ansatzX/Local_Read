@@ -1,0 +1,3 @@
+interface:
+  display_name: "Local_Read"
+  short_description: "Read local documents as indexed, structured artifacts"

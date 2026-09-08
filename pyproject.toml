@@ -1,97 +1,92 @@
-[project]
-name = "local_read_mcp"
-version = "0.2.0"
-description = "MCP server for local document processing — structured extraction from PDFs, Office, images, and code"
-readme = "README.md"
-authors = [
-    { name = "ansatz Vibe", email = "ansatzMe@outlook.com" }
-]
-requires-python = ">=3.10"
-dependencies = [
-    "mcp>=1.0.0",
-    "fastmcp<2.14.0",
-    "mammoth>=1.9.0",
-    "markdownify>=0.14.1",
-    "openpyxl>=3.1.5",
-    "pdfminer.six",
-    "python-pptx",
-    "markitdown>=0.1.1",
-    "pyyaml>=6.0.2",
-    "beautifulsoup4>=4.12.0",
-    "pymupdf>=1.23.0",
-    "pdfplumber>=0.10.0",
-    "pillow>=10.0.0",
-    "openai>=1.0.0",  # Vision API (OpenAI-compatible)
-    "aiohttp>=3.9.0",  # Vision API
-    # MinerU-inspired PDF processing enhancements
-    "pypdfium2>=4.30.0",
-    "pypdf>=5.6.0",
-    "numpy>=1.21.6",
-]
-
-[project.scripts]
-local-read-mcp = "local_read_mcp.cli:main"
-local-read-mcp-server = "local_read_mcp.server.__main__:main"
-
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-[project.optional-dependencies]
-# Kept for backward compatibility; PDF deps are now included by default.
-pdf = []
-# MinerU backend - high-quality PDF parsing with layout analysis, formula recognition, and table recognition
-mineru = [
-    "mineru>=1.0.0",
+[project]
+name = "Local_Read"
+version = "0.3.0"
+description = "Offline document reading skill and CLI with local MinerU inference"
+readme = "README.md"
+license = "MIT"
+authors = [{ name = "ansatz Vibe", email = "ansatzMe@outlook.com" }]
+requires-python = ">=3.10,<3.14"
+dependencies = [
+    # MinerU owns the PyTorch/Transformers constraints; weights are prepared separately.
+    "mineru[pipeline,vlm]==3.4.5",
+    "openai>=1.70.0,<3",  # Also required by MinerU; vision.py uses AsyncOpenAI directly.
+    # NumPy is only used upstream, so MinerU owns that dependency.
+    # Keep direct imports declared even when an upstream package also requires them.
+    # Local PDF extraction, rendering and image processing.
+    "pdfminer.six",
+    "pdfplumber>=0.10.0",
+    "pillow>=10.0.0",  # Also in MinerU; local image extraction/inspection uses PIL.
+    "pymupdf>=1.23.0",
+    "pypdf>=5.6.0",  # Also in MinerU; our PDF classifier uses PdfReader.
+    "pypdfium2>=4.30.0",  # Also in MinerU; our PDF classifier uses pdfium.
+    # Office, HTML and structured-text conversion.
+    "beautifulsoup4>=4.12.0",  # Also in MinerU; our HTML converter uses BeautifulSoup.
+    "mammoth>=1.9.0",  # Also in MinerU; our DOCX converter calls mammoth.
+    "markdownify>=0.14.1",
+    "openpyxl>=3.1.5",  # Also in MinerU; our XLSX converter uses openpyxl.
+    # Same pptx module as python-pptx; use MinerU's provider to avoid file collisions.
+    "pypptx-with-oxml>=1.0.3,<2",
+    "pyyaml>=6.0.2",  # Also in MinerU pipeline; our YAML converter calls yaml.
+    # Fallback for formats without a dedicated converter.
+    "markitdown>=0.1.1",
 ]
+
+[project.scripts]
+local-read = "local_read.cli:main"
+
+[dependency-groups]
 dev = [
     "pytest>=8.4.1",
     "pytest-asyncio>=1.0.0",
     "pytest-cov>=6.0.0",
-    "coverage[toml]>=7.6.0",
     "ruff>=0.8.0",
 ]
 
+[tool.hatch.build.targets.wheel]
+packages = ["src/local_read"]
+
 [tool.pytest.ini_options]
-minversion = "8.3.5"
+minversion = "8.4.1"
 testpaths = ["src/test"]
 asyncio_default_fixture_loop_scope = "function"
-addopts = [
-    "-rA",
-    "--show-capture=stderr",
-    "--cov=src/local_read_mcp",
-    "--cov-report=term-missing",
-    "--cov-report=html",
-]
+addopts = "-ra"
+cache_dir = ".local_read_mcp/pytest-cache"
 filterwarnings = [
     "ignore:builtin type SwigPyPacked has no __module__ attribute:DeprecationWarning",
     "ignore:builtin type SwigPyObject has no __module__ attribute:DeprecationWarning",
     "ignore:builtin type swigvarlink has no __module__ attribute:DeprecationWarning",
 ]
 
+# Coverage is opt-in: make coverage.
 [tool.coverage.run]
-source = ["src/local_read_mcp"]
-omit = [
-    "*/test/*",
-    "*/__pycache__/*",
-    "*/venv/*",
-    "*/.venv/*",
-]
+source = ["local_read"]
+data_file = ".local_read_mcp/coverage/.coverage"
 
 [tool.coverage.report]
 precision = 2
 show_missing = true
 skip_covered = false
 
+[tool.coverage.html]
+directory = ".local_read_mcp/coverage/html"
+
+[tool.coverage.xml]
+output = ".local_read_mcp/coverage/coverage.xml"
+
+# One Ruff configuration, aligned with the package's supported Python syntax.
 [tool.ruff]
-line-length = 100
+line-length = 88
 target-version = "py310"
+extend-exclude = [".local_read_mcp"]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "N", "UP", "W"]
-ignore = []
+select = ["E", "W", "F", "I", "UP", "RUF"]
+ignore = ["E501"]
 
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
-indent-width = 4

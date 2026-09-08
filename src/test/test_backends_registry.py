@@ -13,14 +13,14 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from local_read_mcp.backends.base import (
+from local_read.backends.base import (
     BackendRegistry,
     BackendType,
     DocumentBackend,
     get_registry,
 )
-from local_read_mcp.backends.simple import SimpleBackend
-from local_read_mcp.converters import DocumentConverterResult
+from local_read.backends.simple import SimpleBackend
+from local_read.converters import DocumentConverterResult
 
 
 class MockSimpleBackend(DocumentBackend):

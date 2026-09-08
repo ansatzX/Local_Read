@@ -20,7 +20,7 @@ from unittest.mock import patch
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from local_read_mcp.output_manager import OutputManager
+from local_read.output_manager import OutputManager
 
 
 class TestOutputManager:
@@ -42,7 +42,7 @@ class TestOutputManager:
         assert output_dir.exists()
         assert output_dir.is_dir()
 
-        # Verify it's under .local_read_mcp
+        # Verify it's under .local_read
         assert output_dir.parent.name == ".local_read_mcp"
         assert output_dir.parent.parent == tmp_path
 
@@ -62,7 +62,7 @@ class TestOutputManager:
             # Check directory name format: safe_filename_timestamp
             dir_name = output_dir.name
             expected_timestamp = "20260410_143045"
-            assert dir_name.endswith(f"_{expected_timestamp}")
+            assert f"_{expected_timestamp}_" in dir_name
             assert dir_name.startswith("my_report_")
 
             # Test with filename containing special characters
@@ -72,6 +72,14 @@ class TestOutputManager:
             dir_name2 = output_dir2.name
             # Special characters should be replaced with _
             assert "my_report_2026__________" in dir_name2
+
+    def test_repeated_input_has_independent_output(self, tmp_path):
+        manager = OutputManager(base_dir=tmp_path)
+        first = manager.create_output_dir("same.pdf")
+        second = manager.create_output_dir("same.pdf")
+        assert first != second
+        (first / "output.md").write_text("first run")
+        assert not (second / "output.md").exists()
 
     def test_subdirectories_creation(self, tmp_path):
         """Test that images subdirectory is created."""
@@ -109,7 +117,7 @@ class TestOutputManager:
         input_file = tmp_path / "test.pdf"
         output_dir = manager.create_output_dir(str(input_file))
 
-        # Verify .local_read_mcp is in current working directory
+        # Verify .local_read is in current working directory
         assert output_dir.parent.parent == tmp_path
 
 

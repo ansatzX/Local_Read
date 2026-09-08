@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 def test_resolve_page_range_logical_uses_extractor_mapping(monkeypatch):
     """Logical page mode should resolve through TOC/page-label aware extractor mapping."""
-    from local_read_mcp.server import orchestrator
+    from local_read import orchestrator
 
     observed = {}
 
@@ -31,7 +31,7 @@ def test_resolve_page_range_logical_uses_extractor_mapping(monkeypatch):
 
     monkeypatch.setitem(
         __import__("sys").modules,
-        "fitz",
+        "pymupdf",
         SimpleNamespace(open=lambda path: FakeDoc()),
     )
     monkeypatch.setattr(orchestrator, "TocExtractor", FakeExtractor)
@@ -55,12 +55,12 @@ def test_resolve_page_range_logical_uses_extractor_mapping(monkeypatch):
 
 def test_resolve_page_range_logical_without_fitz_keeps_open_ended_range(monkeypatch):
     """When fitz is unavailable, logical open-ended ranges should remain open-ended."""
-    from local_read_mcp.server import orchestrator
+    from local_read import orchestrator
 
     original_import = builtins.__import__
 
     def fake_import(name, *args, **kwargs):
-        if name == "fitz":
+        if name == "pymupdf":
             raise ImportError("fitz not available")
         return original_import(name, *args, **kwargs)
 
@@ -83,7 +83,7 @@ def test_resolve_page_range_logical_without_fitz_keeps_open_ended_range(monkeypa
 
 def test_plan_chunks_no_split_keeps_zero_end_page():
     """end_page=0 must not be treated as falsy and expanded."""
-    from local_read_mcp.server import orchestrator
+    from local_read import orchestrator
 
     chunks = orchestrator.plan_chunks(
         file_path="sample.pdf",
@@ -102,8 +102,8 @@ def test_plan_chunks_no_split_keeps_zero_end_page():
 
 def test_process_and_save_slices_pdf_chunk_without_name_error(monkeypatch, tmp_path):
     """PDF chunk slicing path should work (regression for missing tempfile import)."""
-    from local_read_mcp.server import orchestrator
-    from local_read_mcp.segmenter import Chunk
+    from local_read import orchestrator
+    from local_read.segmenter import Chunk
 
     input_pdf = tmp_path / "input.pdf"
     input_pdf.write_text("fake pdf", encoding="utf-8")
@@ -132,7 +132,7 @@ def test_process_and_save_slices_pdf_chunk_without_name_error(monkeypatch, tmp_p
 
     monkeypatch.setitem(
         __import__("sys").modules,
-        "fitz",
+        "pymupdf",
         SimpleNamespace(open=fake_fitz_open),
     )
 
@@ -173,7 +173,7 @@ def test_process_and_save_slices_pdf_chunk_without_name_error(monkeypatch, tmp_p
 
 def test_merge_chunk_markdowns_dedupes_only_overlap_window():
     """Overlap prefix duplication should be removed for adjacent overlapping chunks only."""
-    from local_read_mcp.server import orchestrator
+    from local_read import orchestrator
 
     duplicated_overlap = "\n".join(
         [
@@ -214,7 +214,7 @@ def test_merge_chunk_markdowns_dedupes_only_overlap_window():
 
 def test_merge_chunk_markdowns_keeps_short_single_line_overlap():
     """A short single-line duplicate should not be trimmed."""
-    from local_read_mcp.server import orchestrator
+    from local_read import orchestrator
 
     short_line = "Figure 1."
     merged = orchestrator.merge_chunk_markdowns(
@@ -240,7 +240,7 @@ def test_merge_chunk_markdowns_keeps_short_single_line_overlap():
 
 def test_merge_chunk_markdowns_keeps_repeated_boilerplate_without_page_overlap():
     """Repeated boilerplate in non-overlapping chunks should remain untouched."""
-    from local_read_mcp.server import orchestrator
+    from local_read import orchestrator
 
     boilerplate = "Company Internal Use Only"
     merged = orchestrator.merge_chunk_markdowns(
@@ -267,7 +267,7 @@ def test_merge_chunk_markdowns_keeps_repeated_boilerplate_without_page_overlap()
 
 def test_merge_chunk_markdowns_resets_dedupe_context_after_error_chunk():
     """After a failed chunk, the next successful chunk should not dedupe against stale context."""
-    from local_read_mcp.server import orchestrator
+    from local_read import orchestrator
 
     overlap_text = "\n".join(
         [
