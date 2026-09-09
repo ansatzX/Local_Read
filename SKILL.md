@@ -15,7 +15,7 @@ description: 离线读取本地 PDF、Word、Excel、PowerPoint、HTML 和 ZIP�
 python3 "$SKILL_DIR/scripts/local_read.py" convert "/absolute/path/paper.pdf"
 ```
 
-启动器需要 Python 3 和 `uv`；运行环境支持 Python 3.10–3.13。`setup` 统一安装 MinerU、PyTorch、Transformers 和 OpenAI SDK。默认 `auto` 对 PDF 优先选择本地可用的 MinerU，否则使用无模型的 Simple；其他文档使用本地转换器。转换阶段不会自动安装依赖、下载模型或调用远程视觉 API。
+启动器需要 Python 3 和 `uv`；运行环境支持 Python 3.10–3.13。`setup` 统一安装 MinerU、PyTorch、Transformers 和 OpenAI SDK。默认 `auto` 对 PDF 优先选择本地可用的 MinerU，否则使用无模型的 Simple；其他文档使用本地转换器。解析阶段不会自动安装依赖、下载模型或调用远程视觉 API；只有显式选择 `--visual-review auto|online` 才允许后续图片复核使用已配置的 API。
 
 ## 按问题读取
 
@@ -27,14 +27,31 @@ python3 "$SKILL_DIR/scripts/local_read.py" convert "/absolute/path/paper.pdf"
 
 2. 检查返回 JSON 的 `status`、`warnings`、`quality_state`、`requires_ocr` 和失败信息。`complete` 只表示处理完成，不能据此认定内容可读或准确；后端降级必须体现在回答中。
 3. 根据 `files.index_json` 定位材料，再读取 `files.markdown` 的相关部分。用 `files.intermediate_json` 核对页码与位置；`files.result_json` 保存本次摘要。索引没有表格条目，不代表原文没有表格。
-4. 需要看图时加 `--extract-images`，随后用原生图像工具查看提取结果。区分图像观察、图注陈述和正文数据；图号匹配只是候选，可能存在重复裁图。
+4. 需要图像元素时加 `--extract-images`，Local_Read 自动执行离线区域、类别与图注关联检查。读取 `files.visual_review`，使用每个区域的 `effective` 和校验状态；原始图片清单的首选匹配仍只是候选。规则未解决的问题由 Local_Read 标记，不要求宿主代替它确认标签。
 5. 回答时保留原文页码及材料来源。部分失败只支持对成功提取部分的回答；通过 `files.chunks` 定位缺失范围后可单独重试。
 
 **页码约定：**命令的物理页范围从 **0** 开始，两端包含；统一 `intermediate.json` 中的块页码从 **1** 开始，指向原始 PDF，分块结果也无需再次加偏移。`page` 或 `bbox` 为 `null` 表示未知。MinerU 原始 JSON 保留上游的块内页码。印刷页码与物理页码可能不同；逻辑页映射的用法见参考文档。
 
+## 图片校验模式
+
+```bash
+# 默认离线：提取图片并执行几何、类别与图注一致性检查
+python3 "$SKILL_DIR/scripts/local_read.py" convert paper.pdf --extract-images
+# 用户明确启用 API：只复核有疑点的页面
+python3 "$SKILL_DIR/scripts/local_read.py" convert paper.pdf --visual-review auto
+# 用户明确启用 API：复核所有检测到视觉区域的页面，最多 8 次请求
+python3 "$SKILL_DIR/scripts/local_read.py" convert paper.pdf --visual-review online --review-max-pages 8
+```
+
+`--visual-review offline` 也会启用图片提取，无需另加 `--extract-images`；这三个模式仅支持 PDF。未请求图片提取或复核时，不保证存在 `files.visual_review`。
+
+`auto` / `online` 会发送页面原图、编号框预览、裁图和图注到配置的 VLM。复核状态与转换状态独立：`rule_passed` 仅代表规则未发现冲突，`vlm_reviewed` 代表模型已复核，`needs_review` 代表仍有疑点、API 不可用或预算不足。`no_regions_detected` 不证明页面没有图片。API 出错保留离线结果，不把失败当作确认。
+
+有效的类别、图注关联和边界修订会记录依据；改动边界后另存裁图。拆分与合并建议保留为歧义项，不自动删除或替换原区域。更多状态和文件约定见使用参考。
+
 ## 本地资源不足时
 
-准备是显式联网操作，读取是离线操作。仅在任务包含安装或模型准备时执行准备命令；否则报告缺失资源。
+安装与模型下载是显式准备操作；文档解析保持离线，API 图片复核另由显式模式控制。仅在任务包含安装或模型准备时执行准备命令；否则报告缺失资源。
 
 ```bash
 # 安装完整软件依赖，不下载模型权重

@@ -2,7 +2,7 @@
 
 Local_Read 是一个以学术 PDF 阅读为重点的本地文档技能包。它把文档转换为 Markdown、索引、图片和带来源信息的结构化文件，供智能体按问题继续阅读。也支持 Word、Excel、PowerPoint、HTML 和 ZIP 的本地转换。
 
-项目通过 **Skill + CLI** 使用。MinerU 提供深度 PDF 解析与模型推理基础设施；Local_Read 负责本地资源准备、后端选择、页码与分段处理、结果保存及智能体使用流程。
+项目通过 **Skill + CLI** 使用。MinerU 提供深度 PDF 解析与模型推理基础设施；Local_Read 负责本地资源准备、后端选择、页码与分段处理、结果保存、图片区域与图注复核及智能体使用流程。
 
 ## 开始使用
 
@@ -31,7 +31,7 @@ python3 "$SKILL_DIR/scripts/local_read.py" convert paper.pdf
 # 读取第 11–20 个物理页面
 python3 "$SKILL_DIR/scripts/local_read.py" convert paper.pdf --start-page 10 --end-page 19 --strict-page-range
 
-# 同时提取图片，供后续查看
+# 同时提取图片并执行离线规则检查
 python3 "$SKILL_DIR/scripts/local_read.py" convert paper.pdf --extract-images
 ```
 
@@ -59,7 +59,7 @@ python3 "$SKILL_DIR/scripts/local_read.py" models status
 python3 "$SKILL_DIR/scripts/local_read.py" convert paper.pdf --backend vlm-hybrid
 ```
 
-`setup` 默认安装 MinerU、PyTorch、Transformers 和 OpenAI SDK。如果已有模型，执行 `setup` 后配置已有模型路径即可。下载失败会保留缓存供重试。转换过程不自动下载模型，也不自动改用 API。
+`setup` 默认安装 MinerU、PyTorch、Transformers 和 OpenAI SDK。如果已有模型，执行 `setup` 后配置已有模型路径即可。下载失败会保留缓存供重试。解析阶段不自动下载模型或改用 API；后续 API 图片复核需显式指定模式。
 
 ## 文件存放在哪里
 
@@ -80,6 +80,8 @@ python3 "$SKILL_DIR/scripts/local_read.py" convert paper.pdf --backend vlm-hybri
   intermediate.json    内容块、阅读顺序、来源页码与坐标
   index.json           内容索引
   images/              提取或渲染的图片
+  visual_review/       请求 PDF 图片提取或复核时生成
+    review.json        原始与有效判断、检查状态和修订依据
 ```
 
 长文档还会产生分块目录和结构目录；MinerU 解析保留原始中间 JSON 与内容列表。具体位置以返回 JSON 中的 `files` 为准。
@@ -94,9 +96,28 @@ python3 "$SKILL_DIR/scripts/local_read.py" convert paper.pdf --backend vlm-hybri
 
 转换返回简洁 JSON，正文保存在磁盘。参数错误和依赖安装失败可能只在 stderr 提供说明，不保证 JSON；不能仅凭退出码 2 推断部分提取成功。
 
-重点检查 `warnings`、`quality_state`、`requires_ocr` 和失败范围。Simple 可能把表格提取为文字，不能据此保证行列关系；图号关联和近重复图像分组也需要核对。
+重点检查 `warnings`、`quality_state`、`requires_ocr` 和失败范围。Simple 可能把表格提取为文字，不能据此保证行列关系；图号关联应结合图片复核报告的状态使用，近重复图像分组仍是启发式结果。
 
 命令行物理页索引从 **0** 开始、两端包含。统一中间结果的页码从 **1** 开始，指向原始 PDF；分块结果已经应用偏移。未知页码、坐标为 `null`。MinerU 原始文件则保留上游的分块内编号。引用印刷页码前，需核对它与物理页码的对应关系。
+
+## 图片区域与图号校验
+
+PDF 转换添加 `--extract-images` 后，Local_Read 默认在本地检查区域边界、元素类别和图注关联。图注从页面文字与 MinerU 原始结果取得，关联使用空间位置和栏位信息；正文中提到的图号不直接作为图注。重叠区域、共享图注、类别冲突或无法关联的对象会标记为疑点。
+
+```bash
+# 离线规则检查
+python3 "$SKILL_DIR/scripts/local_read.py" convert paper.pdf --extract-images
+# 已配置 VISION_*，显式允许向 API 发送有疑点的页面
+python3 "$SKILL_DIR/scripts/local_read.py" convert paper.pdf --visual-review auto
+# 所有检测到视觉区域的页面都复核，API 请求上限为 8 页
+python3 "$SKILL_DIR/scripts/local_read.py" convert paper.pdf --visual-review online --review-max-pages 8
+```
+
+`--visual-review offline` 等价地启用图片提取和离线检查。所有显式复核模式仅支持 PDF；普通 `convert` 未请求提图时不自动运行复核。`auto` 依据规则筛选疑点，可能漏掉规则未发现的错误；`online` 的覆盖仍受检测结果和页数预算限制。
+
+联网复核发生在离线解析结束之后。发送内容包括整页、编号框图、区域裁图和图注；程序校验 VLM 返回的区域 ID、类别、坐标和图注目标，再应用合法修改。每页一次请求，默认最多 8 页、单次超时 60 秒，不自动重试。API 不可用、超时、返回非法结果或达到预算时保留离线结果并记录未完成状态。
+
+返回值中的 `files.visual_review` 指向 `visual_review/review.json`，保留原始判断、有效判断、各项规则检查和修订依据。复核状态独立于转换的 `complete` / `partial` / `failed`；转换完成也可能仍有 `needs_review`。修改区域边界会另存裁图；拆分/合并建议暂保留为歧义，不自动变更区域拓扑。`rule_passed` 不等于视觉识别正确，`vlm_reviewed` 也不是科学结论验证。复核仅覆盖成功提取页面上检测到的区域，不能证明没有遗漏图片。
 
 ## 配置与可选 API
 
@@ -110,7 +131,7 @@ python3 "$SKILL_DIR/scripts/local_read.py" convert paper.pdf --backend vlm-hybri
 python3 "$SKILL_DIR/scripts/local_read.py" analyze figure.png --question "解释坐标轴与图例"
 ```
 
-该命令会发送图片到配置的服务商。离线 `convert` 不会调用它。当前离线防护包括模型离线设置与 Python 网络调用限制，不是操作系统级网络隔离。
+该命令会发送图片到配置的服务商。默认离线 `convert` 不会调用它；显式 `--visual-review auto|online` 则使用专门的结构化 VLM 图片复核接口。当前离线防护包括模型离线设置与 Python 网络调用限制，不是操作系统级网络隔离。
 
 ## 开发与验证
 
@@ -124,6 +145,6 @@ make skill    # 构建技能压缩包
 
 Python 接口的分发名为 `Local_Read`，包名为 `local_read`，CLI 名为 `local-read`。已有 Python 环境可用 `uv pip install -e /absolute/path/to/local-read` 安装，再运行 `local-read convert paper.pdf`。
 
-测试覆盖生成文档、页码与分块处理、错误与降级、共享环境、进程锁和技能打包使用。`models_ready` 只检查本地包和文件；测试通过不等于真实论文识别质量或目标硬件推理能力已得到验证。
+测试覆盖生成文档、页码与分块处理、错误与降级、共享环境、进程锁、技能打包、离线复核与模拟 API 修订和失败恢复。`models_ready` 只检查本地包和文件；测试通过不等于真实论文识别质量或目标硬件推理能力已得到验证。
 
 详细用法见 [使用参考](references/usage.md)。源码仓库中的 `AGENTS.md` 说明代码维护约定。项目代码采用 MIT 许可证，依赖和模型遵循各自许可证。

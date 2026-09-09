@@ -402,9 +402,8 @@ def _build_image_manifest(image_metadata: list[dict[str, Any]], markdown: str) -
     figure_matches: list[dict[str, Any]] = []
     for slot in figure_slots:
         page_hint = slot.get("page_hint")
-        fig_num = slot.get("figure_number")
         ranked: list[tuple[float, dict[str, Any]]] = []
-        for cidx, image in enumerate(canonical_images, start=1):
+        for image in canonical_images:
             score = 0.0
             candidate_page = image.get("first_seen", {}).get("page")
             if isinstance(page_hint, int) and isinstance(candidate_page, int):
@@ -413,8 +412,6 @@ def _build_image_manifest(image_metadata: list[dict[str, Any]], markdown: str) -
             labels = set(image.get("labels", []))
             if "figure_like" in labels:
                 score += 0.2
-            if isinstance(fig_num, int) and fig_num == cidx:
-                score += 0.1
             ranked.append((score, image))
         ranked.sort(key=lambda x: x[0], reverse=True)
         top = [
@@ -444,6 +441,7 @@ def _build_image_manifest(image_metadata: list[dict[str, Any]], markdown: str) -
                 "caption": slot.get("caption", ""),
                 "page_hint": slot.get("page_hint"),
                 "primary_candidate_id": primary_candidate_id,
+                "association_status": "unverified_candidate",
                 "candidate_cluster_ids": cluster_ids,
                 "candidates": top,
             }

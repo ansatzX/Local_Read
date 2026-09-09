@@ -1,8 +1,8 @@
 # Local_Read CLI reference
 
-The portable launcher is `python3 "$SKILL_DIR/scripts/local_read.py"`. An installed runtime also provides `local-read` and `python -m local_read` with the same commands. Conversion never requires MCP.
+The portable launcher is `python3 "$SKILL_DIR/scripts/local_read.py"`. An installed runtime also provides `local-read` and `python -m local_read` with the same commands. The CLI runs document extraction locally and supports explicitly enabled API visual review afterward.
 
-Run `python3 "$SKILL_DIR/scripts/local_read.py" setup` online once for the full runtime. The launcher runs ordinary conversions with `uv --offline --no-sync`, retaining installed dependencies. Rerun setup after changing skill code/lockfiles. The prepared runtime is shared across workspaces under `~/.cache/local-read/runtime/` (absolute `LOCAL_READ_RUNTIME_DIR` override). Identical skill releases share a content-keyed environment even when relocated. A new project can read offline immediately; a new code/lock version needs setup once. Missing runtime returns an actionable failure instead of attempting installation. Legacy project-local virtual environments are not moved; run setup once to create the shared runtime. Operations using the same runtime are serialized, including setup, to avoid changing packages during a read.
+Run `python3 "$SKILL_DIR/scripts/local_read.py" setup` online once for the full runtime. The launcher runs ordinary conversions with `uv --offline --no-sync`, retaining installed dependencies. Rerun setup after changing skill code/lockfiles. The prepared runtime is shared across workspaces under `~/.cache/local-read/runtime/` (absolute `LOCAL_READ_RUNTIME_DIR` override). Identical skill releases share a content-keyed environment even when relocated. A new project can read offline immediately; a new code/lock version needs setup once. Missing runtime returns an actionable failure instead of attempting installation. Operations using the same runtime are serialized, including setup, to avoid changing packages during a read.
 
 ## Documents
 
@@ -34,7 +34,7 @@ Current limitations: block confidence defaults in the underlying IR are not cali
 
 Unified intermediate JSON uses original-document **1-based physical pages**, including per-chunk files. Do not add offsets again. Unknown page/bbox is null, not page 1 or a zero rectangle. Native MinerU files retain upstream local numbering. Use the unified page field when citing the original PDF.
 
-## Optional MinerU
+## Local MinerU models
 
 ```bash
 python3 "$SKILL_DIR/scripts/local_read.py" models prepare --source huggingface
@@ -42,15 +42,25 @@ python3 "$SKILL_DIR/scripts/local_read.py" models status
 python3 "$SKILL_DIR/scripts/local_read.py" convert paper.pdf --backend vlm-hybrid --mineru-effort medium
 ```
 
-`models prepare` explicitly goes online and reuses MinerU 3.4.5's `mineru.cli.models_download --model_type all`, with the standard pipeline and VLM inference dependencies. Source choices are huggingface, modelscope, or auto. Dependencies and model weights can be large. An interrupted download retains upstream caches for retry. `setup` installs MinerU, PyTorch, Transformers and OpenAI SDK without model weights. The legacy `--with-mineru` launcher flag is accepted as a no-op.
+`models prepare` explicitly goes online and reuses MinerU 3.4.5's `mineru.cli.models_download --model_type all`, with the standard pipeline and VLM inference dependencies. Source choices are huggingface, modelscope, or auto. Dependencies and model weights can be large. An interrupted download retains upstream caches for retry. `setup` installs MinerU, PyTorch, Transformers and OpenAI SDK without model weights.
 
 Model weights and inference caches live in the user-global `~/.cache/local-read/models/`; preparation writes `mineru.json` and `model_manifest.json` there. Set `LOCAL_READ_MODEL_DIR` to an absolute path (for example `/Volumes/models/local-read`) to share another disk. The launcher and direct CLI use the same resolver for preparation and inference. Projects share these files; document output remains project-local and Python environments are also user-shared. Use `setup` once per skill version to install dependencies; new projects reuse them. Stick to the same download source to reuse its hub cache; different sources/revisions can occupy separate cache entries. Existing project-local model configs remain a fallback when no shared config exists, or select one explicitly with `MINERU_TOOLS_CONFIG_JSON`; old weights are not moved or copied automatically. Readiness checks verify required component weights, VLM configuration/tokenizer/shards, and recorded file sizes. They do not load models, verify weight hashes, or prove adequate hardware or OCR accuracy.
 
-To reuse existing models, set `MINERU_TOOLS_CONFIG_JSON` to an absolute configuration path with `models-dir.pipeline` and `models-dir.vlm`. Relative model paths resolve against that config file. Selection is explicit config → managed config → legacy project-local config → skill-root mineru.json. The old independent `LRMCP_MINERU_MODELS_DIR` probe is no longer used. Preparation always writes the managed config; an explicit override remains authoritative until unset.
+To reuse existing models, set `MINERU_TOOLS_CONFIG_JSON` to an absolute configuration path with `models-dir.pipeline` and `models-dir.vlm`. Relative model paths resolve against that config file. Selection is explicit config → managed config → legacy project-local config → skill-root mineru.json. Preparation always writes the managed config; an explicit override remains authoritative until unset.
 
-Conversion materializes a sanitized local inference config, sets `MINERU_MODEL_SOURCE=local`, enables Hugging Face/Transformers offline settings and disables upstream LLM API postprocessing. Python outbound DNS/sockets are blocked during conversion; loopback is allowed for local engines. This is not an OS network sandbox for native code or subprocesses. Missing models fail locally or fall back to Simple with warnings, never to a hosted API.
+Conversion materializes a sanitized local inference config, sets `MINERU_MODEL_SOURCE=local`, enables Hugging Face/Transformers offline settings and disables upstream LLM API postprocessing. Python outbound DNS/sockets are blocked during the extraction stage; loopback is allowed for local engines. This is not an OS network sandbox for native code or subprocesses. Missing models fail locally or fall back to Simple with warnings, never to a hosted API.
 
 `--mineru-engine auto|transformers|mlx|vllm|lmdeploy` uses MinerU's engine resolver; the standard installation includes the transformers route, while accelerated engines require their own compatible installations. `--mineru-effort medium|high` controls upstream hybrid effort. Hardware and real model inference need separate verification.
+
+## PDF visual review
+
+`convert --extract-images` automatically runs offline visual checks. Add `--visual-review auto` to explicitly allow the configured API to review suspect pages, or `--visual-review online` for all detected visual-region pages. Every explicit `--visual-review offline|auto|online` mode enables image extraction and requires PDF input. Ordinary conversion without image extraction does not create a review report. The API stage runs after the offline extraction guard exits. `--review-max-pages` bounds requests per invocation (default 8); requests run sequentially with a 60-second timeout and no SDK retries. Merely having network access or credentials does not enable review calls.
+
+`files.visual_review` points to `visual_review/review.json`. The compact `visual_review` summary in stdout/result.json reports mode, status, region count, unresolved count and request count. Conversion can be complete while review still needs attention. Review statuses are `rule_passed`, `vlm_reviewed`, `needs_review`, `no_regions_detected`, or a top-level `failed` if review preparation fails. A page can additionally report API unavailable, failed, or budget exhausted.
+
+Reports retain original geometry/type/caption linkage, effective interpretation, separate boundary/category/association rule checks, model decisions and revision reasons. `original_crop` and `effective_crop` distinguish unchanged evidence from recropped output; PDF pages are 1-based physical and coordinates are unrotated PDF points. Raw MinerU evidence remains in its existing artifacts. Old image-manifest primary candidates remain explicitly unverified; use the review report when interpreting labels.
+
+Auto mode can miss errors that offline rules do not flag; online mode is still limited to detected regions and its page budget. Review covers successfully extracted pages only. The VLM receives original page render, annotated page, all detected-region crops and caption metadata. Only valid IDs and bounded coordinates are accepted; invalid page responses are rejected before application. Relabeling, reassociation and recropping are applied as a separate effective result. Split/merge proposals are validated and retained as ambiguous, not automatically materialized. API failures retain offline results. No real API quality guarantee follows from schema validation. Raster-only pages can produce a whole-page candidate; no-regions and rule-passed states do not prove complete or correct extraction. Rotated MinerU boxes without a verified coordinate mapping are not reinterpreted; PDF-native region fallback is used instead.
 
 ## Optional image analysis
 

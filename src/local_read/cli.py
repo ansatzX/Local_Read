@@ -47,6 +47,7 @@ def _summarize(result: dict) -> dict:
         "missing",
         "offline",
         "manifest_path",
+        "visual_review",
     )
     summary = {key: result[key] for key in keys if key in result}
     summary.update(schema_version="1.0", status=status, success=status == "complete")
@@ -82,6 +83,8 @@ def convert_file(
     include_page_breaks: bool = True,
     include_metadata: bool = True,
     verbose: bool = False,
+    visual_review: str | None = None,
+    review_max_pages: int = 8,
     **options,
 ) -> int:
     """Convert in the caller's working directory and emit one JSON result."""
@@ -89,6 +92,15 @@ def convert_file(
         path = Path(input_path).expanduser().resolve(strict=True)
         if not path.is_file():
             raise ValueError(f"Input is not a file: {path}")
+        review_requested = visual_review is not None
+        visual_review = visual_review or "offline"
+        if visual_review not in {"offline", "auto", "online"}:
+            raise ValueError("Unknown visual review mode")
+        is_pdf = options.get("format") == "pdf" or path.suffix.lower() == ".pdf"
+        if review_requested:
+            if not is_pdf:
+                raise ValueError("Visual review is PDF-only")
+            options["extract_images"] = True
         from .local_runtime import offline_execution
 
         with contextlib.redirect_stdout(sys.stderr), offline_execution():
@@ -110,6 +122,21 @@ def convert_file(
                         include_page_breaks=include_page_breaks,
                         include_metadata=include_metadata,
                     ).save_to_file(files["markdown"])
+        # Extraction always remains offline. Only explicit review modes may use API.
+        if is_pdf and result.get("success") and not result.get("all_chunks_failed") and options.get("extract_images"):
+            try:
+                from .visual_review import review_document
+
+                with contextlib.redirect_stdout(sys.stderr):
+                    review = asyncio.run(review_document(str(path), result, visual_review, review_max_pages))
+                result["visual_review"] = review
+                result.setdefault("files", {})["visual_review"] = review["report"]
+                result.setdefault("warnings", []).extend(review["warnings"])
+                if review["status"] != "vlm_reviewed":
+                    result["warnings"].append(f"Visual review: {review['status']}; consult the report before using figure labels.")
+            except Exception as exc:
+                result["visual_review"] = {"mode": visual_review, "status": "failed", "error_type": type(exc).__name__}
+                result.setdefault("warnings", []).append("Visual review failed; extraction artifacts are retained and visual labels are unverified.")
         if verbose:
             print(f"Processed: {path}", file=sys.stderr)
         return _emit(result)
@@ -228,6 +255,12 @@ def main(argv: list[str] | None = None) -> int:
     convert.add_argument("--extract-forms", action="store_true")
     convert.add_argument("--inspect-struct", action="store_true")
     convert.add_argument("--include-coords", action="store_true")
+    convert.add_argument(
+        "--visual-review", choices=("offline", "auto", "online"),
+        help="PDF visual checks: offline rules; auto sends suspect pages to configured API; online reviews all detected regions",
+    )
+    convert.add_argument("--review-max-pages", type=_positive, default=8,
+                         help="Maximum VLM page requests per conversion (default: 8)")
     convert.add_argument("--no-page-breaks", action="store_true")
     convert.add_argument("--no-metadata", action="store_true")
     convert.add_argument("-v", "--verbose", action="store_true")
