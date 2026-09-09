@@ -199,7 +199,7 @@ def _prepare_models(source: str) -> dict:
     ):
         return {
             "success": False,
-            "error": "Run Local_Read setup to install the pinned inference dependencies before preparing models.",
+            "error": "Install or upgrade the user-level Local_Read CLI before preparing models.",
             "packages": versions,
         }
     if source not in {"huggingface", "modelscope", "auto"}:

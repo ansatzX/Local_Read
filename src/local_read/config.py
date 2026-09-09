@@ -5,10 +5,9 @@
 Configuration management for Local_Read.
 """
 
-import os
 import logging
+import os
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +18,7 @@ _config = None
 class Config:
     """Configuration management for Local_Read."""
 
-    def __init__(self, dotenv_path: Optional[Path] = None):
+    def __init__(self, dotenv_path: Path | None = None):
         """
         Initialize configuration from .env file.
 
@@ -79,7 +78,7 @@ class Config:
         )
 
 
-def get_config(dotenv_path: Optional[Path] = None, reload: bool = False) -> Config:
+def get_config(dotenv_path: Path | None = None, reload: bool = False) -> Config:
     """
     Get global configuration instance.
 
@@ -97,16 +96,16 @@ def get_config(dotenv_path: Optional[Path] = None, reload: bool = False) -> Conf
 
 
 def _project_root() -> Path:
-    """Return the repository root for the installed package."""
+    """Return the user configuration directory, independent of source location."""
     if os.environ.get("LOCAL_READ_CONFIG_DIR"):
-        return Path(os.environ["LOCAL_READ_CONFIG_DIR"]).expanduser().resolve()
-    for parent in Path(__file__).resolve().parents:
-        if (parent / "pyproject.toml").exists():
-            return parent
-    return Path(__file__).resolve().parents[2]
+        directory = Path(os.environ["LOCAL_READ_CONFIG_DIR"]).expanduser()
+        if not directory.is_absolute():
+            raise ValueError("LOCAL_READ_CONFIG_DIR must be an absolute path")
+        return directory.resolve()
+    return Path.home() / ".config/local-read"
 
 
-def _resolve_dotenv_path(dotenv_path: Optional[Path]) -> Path:
+def _resolve_dotenv_path(dotenv_path: Path | None) -> Path:
     if dotenv_path is None:
         return _project_root() / ".env"
 

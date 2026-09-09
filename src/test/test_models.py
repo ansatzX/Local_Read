@@ -232,24 +232,3 @@ def test_legacy_and_explicit_config_selection(monkeypatch, tmp_path):
     assert models.config_path() == shared
     monkeypatch.setenv("MINERU_TOOLS_CONFIG_JSON", str(legacy))
     assert models.config_path() == legacy
-
-
-def test_launcher_uses_same_shared_cache(monkeypatch, tmp_path):
-    import runpy
-
-    launcher = Path(__file__).resolve().parents[2] / "scripts/local_read.py"
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("LOCAL_READ_MODEL_DIR", str(tmp_path / "shared"))
-    monkeypatch.setattr(sys, "argv", [str(launcher), "setup"])
-    import shutil
-
-    monkeypatch.setattr(shutil, "which", lambda _: "/fake/uv")
-    captured = {}
-    import subprocess
-
-    monkeypatch.setenv("LOCAL_READ_RUNTIME_DIR", str(tmp_path / "runtimes"))
-    monkeypatch.setattr(subprocess, "call", lambda args, env: captured.update(env) or 0)
-    runpy.run_path(str(launcher))["main"]()
-    for key, value in cache_environment().items():
-        assert captured[key] == value
-    assert Path(captured["UV_PROJECT_ENVIRONMENT"]).parent == tmp_path / "runtimes"

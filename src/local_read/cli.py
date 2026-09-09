@@ -101,6 +101,7 @@ def convert_file(
             if not is_pdf:
                 raise ValueError("Visual review is PDF-only")
             options["extract_images"] = True
+        (Path.cwd() / ".local_read_mcp/tmp").mkdir(parents=True, exist_ok=True)
         from .local_runtime import offline_execution
 
         with contextlib.redirect_stdout(sys.stderr), offline_execution():
@@ -171,14 +172,14 @@ def _positive(value: str) -> int:
     return number
 
 
-def main(argv: list[str] | None = None) -> int:
+def _main(argv: list[str] | None = None) -> int:
     from . import __version__
 
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] not in {
         "convert",
         "analyze",
-        "setup",
+        "doctor",
         "models",
         "--version",
         "--help",
@@ -194,8 +195,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser(
-        "setup",
-        help="Confirm runtime setup (use the skill launcher to install dependencies)",
+        "doctor",
+        help="Report CLI location, version, installation source and duplicate entries",
     )
     models = commands.add_parser(
         "models", help="Inspect local models or explicitly prepare them online"
@@ -272,8 +273,13 @@ def main(argv: list[str] | None = None) -> int:
     analyze.add_argument("--batch-size", type=_positive, default=6)
     args = vars(parser.parse_args(argv))
     command = args.pop("command")
-    if command == "setup":
-        return _emit({"success": True})
+    if command == "doctor":
+        from .installation import doctor
+
+        print(json.dumps(doctor(), ensure_ascii=False))
+        return 0
+    if command in {"models", "analyze"}:
+        (Path.cwd() / ".local_read_mcp/tmp").mkdir(parents=True, exist_ok=True)
     if command == "models":
         try:
             from .models import model_status, prepare_models
@@ -311,6 +317,33 @@ def main(argv: list[str] | None = None) -> int:
             )
         return _emit(result)
     except Exception as exc:
+        return _emit({"success": False, "error": str(exc)})
+
+
+def main(argv: list[str] | None = None) -> int:
+    from .local_runtime import (
+        cache_environment,
+        file_lock,
+        installation_root,
+        installed_environment,
+    )
+
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    # Diagnostic commands do not create output directories or require a lock.
+    if arguments in (["doctor"], ["--version"], ["--help"], ["-h"]):
+        return _main(arguments)
+    try:
+        from unittest.mock import patch
+
+        temporary = Path.cwd() / ".local_read_mcp/tmp"
+        lock = (
+            file_lock(installation_root() / "installation.lock", timeout=120)
+            if Path(sys.prefix).resolve() == installed_environment().resolve()
+            else contextlib.nullcontext()
+        )
+        with lock, patch.dict("os.environ", cache_environment() | {"TMPDIR": str(temporary)}):
+            return _main(arguments)
+    except (OSError, ValueError, TimeoutError) as exc:
         return _emit({"success": False, "error": str(exc)})
 
 

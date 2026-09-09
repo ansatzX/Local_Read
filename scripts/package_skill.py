@@ -15,15 +15,9 @@ def package_skill() -> Path:
             "SKILL.md",
             "agents/openai.yaml",
             "references/usage.md",
-            "pyproject.toml",
-            "uv.lock",
-            "scripts/local_read.py",
-            "README.md",
             "LICENSE",
-            "mineru.json.template",
         )
     ]
-    files.extend(sorted((root / "src/local_read").rglob("*.py")))
     for path in files:
         if not path.is_file() or path.is_symlink():
             raise ValueError(f"Missing or unsafe release input: {path}")

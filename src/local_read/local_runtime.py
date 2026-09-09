@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import hashlib
 import ipaddress
 import os
-import platform
 import socket
 import time
 from contextlib import contextmanager
@@ -56,24 +54,17 @@ def file_lock(path: Path, timeout: float = 120):
             release()
 
 
-def runtime_root() -> Path:
-    configured = os.environ.get("LOCAL_READ_RUNTIME_DIR")
-    root = Path(configured).expanduser() if configured else Path.home() / ".cache/local-read/runtime"
-    if not root.is_absolute():
-        raise ValueError("LOCAL_READ_RUNTIME_DIR must be an absolute path")
-    return root.resolve()
+def installation_root() -> Path:
+    """One user-owned installation, independent of cwd and skill copies."""
+    return Path.home() / ".local/share/local-read"
 
 
-def runtime_path(skill_root: Path) -> Path:
-    """Identical skill releases share an environment independent of install/cwd."""
-    digest = hashlib.sha256()
-    digest.update(f"{platform.system()}:{platform.machine()}".encode())
-    inputs = [skill_root / "pyproject.toml", skill_root / "uv.lock"]
-    inputs += sorted((skill_root / "src/local_read").rglob("*.py"))
-    for path in inputs:
-        digest.update(path.relative_to(skill_root).as_posix().encode() + b"\0")
-        digest.update(path.read_bytes())
-    return runtime_root() / digest.hexdigest()[:24]
+def cli_path() -> Path:
+    return Path.home() / ".local/bin/local-read"
+
+
+def installed_environment() -> Path:
+    return installation_root() / "tools/local-read"
 
 
 def model_root() -> Path:

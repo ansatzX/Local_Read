@@ -5,29 +5,34 @@ description: 离线读取本地 PDF、Word、Excel、PowerPoint、HTML 和 ZIP�
 
 # Local_Read
 
-围绕用户的问题提取和阅读文档。优先使用已准备的本地资源；普通文本和已有图片可直接用宿主的原生读取能力。
+围绕用户的问题调用已安装的 Local_Read CLI 提取文档。此 Skill 只负责使用流程；普通文本和已有图片可直接用宿主的原生读取能力。
 
 ## 调用入口
 
-将 `SKILL_DIR` 设为本文件所在目录的绝对路径。保持工作目录为用户的项目目录，解析结果会写入该目录下的 `.local_read_mcp/`。
+使用固定用户级入口，保持工作目录为用户项目。解析结果写入该目录下的 `.local_read_mcp/`。
 
 ```bash
-python3 "$SKILL_DIR/scripts/local_read.py" convert "/absolute/path/paper.pdf"
+"$HOME/.local/bin/local-read" doctor
+"$HOME/.local/bin/local-read" convert "/absolute/path/paper.pdf"
 ```
 
-启动器需要 Python 3 和 `uv`；运行环境支持 Python 3.10–3.13。`setup` 统一安装 MinerU、PyTorch、Transformers 和 OpenAI SDK。默认 `auto` 对 PDF 优先选择本地可用的 MinerU，否则使用无模型的 Simple；其他文档使用本地转换器。解析阶段不会自动安装依赖、下载模型或调用远程视觉 API；只有显式选择 `--visual-review auto|online` 才允许后续图片复核使用已配置的 API。
+首次调用或出现安装异常时使用 `doctor`，无需每个文件都重复诊断。本技能不携带程序或安装器。入口缺失时报告需要安装用户级 Local_Read CLI，不用 uvx、uv run、pip 或复制源码临时补装。`doctor` 显示实际版本、路径、来源及重复安装警告；`success=true` 不代表没有警告，`managed=true` 不证明文件未被修改。
+
+默认 `auto` 对 PDF 优先选择本地可用的 MinerU，否则使用无模型的 Simple；其他文档使用本地转换器。解析阶段不会安装依赖、下载模型或调用远程视觉 API；只有显式选择 `--visual-review auto|online` 才允许后续图片复核使用已配置的 API。
+
+`--backend auto` 与 `--visual-review auto` 相互独立，自动选择本地后端不会启用联网复核。
 
 ## 按问题读取
 
 1. 用户指定范围时只提取所需页。以下命令读取 PDF 的第 11–20 个物理页面；`--strict-page-range` 防止章节规划扩大范围。
 
    ```bash
-   python3 "$SKILL_DIR/scripts/local_read.py" convert book.pdf --start-page 10 --end-page 19 --strict-page-range
+   "$HOME/.local/bin/local-read" convert book.pdf --start-page 10 --end-page 19 --strict-page-range
    ```
 
 2. 检查返回 JSON 的 `status`、`warnings`、`quality_state`、`requires_ocr` 和失败信息。`complete` 只表示处理完成，不能据此认定内容可读或准确；后端降级必须体现在回答中。
 3. 根据 `files.index_json` 定位材料，再读取 `files.markdown` 的相关部分。用 `files.intermediate_json` 核对页码与位置；`files.result_json` 保存本次摘要。索引没有表格条目，不代表原文没有表格。
-4. 需要图像元素时加 `--extract-images`，Local_Read 自动执行离线区域、类别与图注关联检查。读取 `files.visual_review`，使用每个区域的 `effective` 和校验状态；原始图片清单的首选匹配仍只是候选。规则未解决的问题由 Local_Read 标记，不要求宿主代替它确认标签。
+4. 需要图像元素时加 `--extract-images`；PDF 成功解析部分会执行离线区域、类别与图注关联检查。若有 `files.visual_review`，读取各区域的 `effective` 和校验状态；若复核失败或报告缺失，说明标签尚未验证。原始图片清单的首选匹配仍只是候选，不要求宿主代替程序确认标签。
 5. 回答时保留原文页码及材料来源。部分失败只支持对成功提取部分的回答；通过 `files.chunks` 定位缺失范围后可单独重试。
 
 **页码约定：**命令的物理页范围从 **0** 开始，两端包含；统一 `intermediate.json` 中的块页码从 **1** 开始，指向原始 PDF，分块结果也无需再次加偏移。`page` 或 `bbox` 为 `null` 表示未知。MinerU 原始 JSON 保留上游的块内页码。印刷页码与物理页码可能不同；逻辑页映射的用法见参考文档。
@@ -36,11 +41,11 @@ python3 "$SKILL_DIR/scripts/local_read.py" convert "/absolute/path/paper.pdf"
 
 ```bash
 # 默认离线：提取图片并执行几何、类别与图注一致性检查
-python3 "$SKILL_DIR/scripts/local_read.py" convert paper.pdf --extract-images
+"$HOME/.local/bin/local-read" convert paper.pdf --extract-images
 # 用户明确启用 API：只复核有疑点的页面
-python3 "$SKILL_DIR/scripts/local_read.py" convert paper.pdf --visual-review auto
+"$HOME/.local/bin/local-read" convert paper.pdf --visual-review auto
 # 用户明确启用 API：复核所有检测到视觉区域的页面，最多 8 次请求
-python3 "$SKILL_DIR/scripts/local_read.py" convert paper.pdf --visual-review online --review-max-pages 8
+"$HOME/.local/bin/local-read" convert paper.pdf --visual-review online --review-max-pages 8
 ```
 
 `--visual-review offline` 也会启用图片提取，无需另加 `--extract-images`；这三个模式仅支持 PDF。未请求图片提取或复核时，不保证存在 `files.visual_review`。
@@ -51,23 +56,22 @@ python3 "$SKILL_DIR/scripts/local_read.py" convert paper.pdf --visual-review onl
 
 ## 本地资源不足时
 
-安装与模型下载是显式准备操作；文档解析保持离线，API 图片复核另由显式模式控制。仅在任务包含安装或模型准备时执行准备命令；否则报告缺失资源。
+模型缓存跨项目共享。仅在用户任务包含模型下载时执行 `models prepare`；它不安装或升级 CLI。
 
 ```bash
-# 安装完整软件依赖，不下载模型权重
-python3 "$SKILL_DIR/scripts/local_read.py" setup
-
-# 扫描件或复杂版面：准备运行环境并缓存模型
-python3 "$SKILL_DIR/scripts/local_read.py" models prepare --source huggingface
+# 扫描件或复杂版面：显式联网缓存模型
+"$HOME/.local/bin/local-read" models prepare --source huggingface
 
 # 检查包版本和模型文件；不加载模型
-python3 "$SKILL_DIR/scripts/local_read.py" models status
+"$HOME/.local/bin/local-read" models status
 
 # 使用本地 MinerU；仍须检查返回结果中的降级提示
-python3 "$SKILL_DIR/scripts/local_read.py" convert paper.pdf --backend vlm-hybrid
+"$HOME/.local/bin/local-read" convert paper.pdf --backend vlm-hybrid
 ```
 
-同一技能代码与依赖版本的运行环境在 `~/.cache/local-read/runtime/` 共享；模型在 `~/.cache/local-read/models/` 共享。切换项目不需重新准备；代码或锁文件变化后需为新版本执行一次 setup。其他磁盘可通过绝对路径 `LOCAL_READ_RUNTIME_DIR`、`LOCAL_READ_MODEL_DIR` 指定。
+程序与依赖统一安装在 `~/.local/share/local-read/`，模型默认在 `~/.cache/local-read/models/`，可用绝对路径 `LOCAL_READ_MODEL_DIR` 指定另一磁盘。技能副本或源码变化不会改变已安装 CLI；升级由用户集中执行。
+
+API 配置默认来自 `~/.config/local-read/.env` 或进程环境；项目和技能目录的 `.env` 不会自动加载。已有配置的诊断与路径覆盖见使用参考，不读取或输出用户密钥。
 
 `requires_ocr=true` 时，不能把空白提取结果当成原文没有内容。检查本地 MinerU 是否可用；`models_ready=true` 仅表示包与文件检查通过，不证明推理成功或识别准确。
 

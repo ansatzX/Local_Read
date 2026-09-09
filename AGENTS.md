@@ -11,11 +11,14 @@ MinerU 是常规软件依赖，负责模型与深度 PDF 解析；模型权重�
 ## 运行约定
 
 - 保持调用者的 cwd。文档产物及工作临时文件写入 cwd 下的 `.local_read_mcp/`，不得写进技能安装目录。
-- 模型默认在 `~/.cache/local-read/models/`；运行环境默认在 `~/.cache/local-read/runtime/`。分别支持绝对路径 `LOCAL_READ_MODEL_DIR`、`LOCAL_READ_RUNTIME_DIR`。
-- 运行环境按平台、包代码与依赖锁内容区分，相同版本跨项目和安装位置复用。修改代码后需为新版本准备环境。
-- `setup` 和 `models prepare` 是显式准备操作；`convert` 解析阶段使用已安装环境与本地模型，不隐式下载、安装或调用远程 API。显式 `--visual-review auto|online` 可在离线解析完成后使用配置的 VLM；默认 offline 不得调用 API。
+- 模型默认在 `~/.cache/local-read/models/`，支持绝对路径 `LOCAL_READ_MODEL_DIR`。CLI 固定入口为 `~/.local/bin/local-read`，程序、依赖与安装缓存集中在 `~/.local/share/local-read/`。
+- Skill 只包含说明、引用、宿主元数据与许可证，不携带 Python 程序、依赖或安装器。Skill 复制、源码修改和日常读取不得创建环境、安装或升级软件。缺少 CLI 时报告缺失。
+- `scripts/install_cli.py` 使用 uv tool 显式安装非 editable 程序，`--upgrade` 替换同一托管安装；不得覆盖非托管入口。不再使用源码哈希运行环境。开发环境仅服务源码测试，不作为宿主技能的安装目标。
+- API 配置默认在 `~/.config/local-read/.env`，绝对路径 `LOCAL_READ_CONFIG_DIR` 可覆盖；不要自动读取技能或项目的 `.env`。`doctor` 只读报告安装信息和冲突，不自动清理旧环境，也不能宣称完成全盘扫描或签名验证。
+- `models prepare` 只显式准备模型，不安装 CLI；`convert` 解析阶段使用已安装环境与本地模型，不隐式下载、安装或调用远程 API。显式 `--visual-review auto|online` 可在离线解析完成后使用配置的 VLM；默认 offline 不得调用 API。
 - 仅保留 `AUTO`、`SIMPLE`、`VLM_HYBRID` 后端选择。Simple 无模型依赖；MinerU 仅处理 PDF。`analyze` 是独立的外部视觉 API 操作。
 - 保持运行环境锁，避免安装与读取互相干扰。模型准备锁必须覆盖下载、校验及配置和清单发布；失败不得发布未验证配置。托管配置读取遵守同一锁约定。
+- 安装与托管 CLI 使用 `~/.local/share/local-read/installation.lock`；开发环境不冒充托管安装。升级前结束活动任务，不把进程锁描述为零停机热升级或事务回滚。安装器使用锁导出的版本约束，但尚无发行签名验证。
 - 不把 Python 网络防护描述成操作系统沙箱；不把文件就绪描述成推理就绪或识别准确。
 
 ## 输出与来源约定
@@ -38,10 +41,13 @@ MinerU 是常规软件依赖，负责模型与深度 PDF 解析；模型权重�
 | `SKILL.md` | 使用技能的智能体如何选择、调用和读取结果 |
 | `README.md` | 用户安装、使用、配置与能力边界 |
 | `references/usage.md` | 按需读取的高级选项及产物说明 |
-| `scripts/local_read.py` | 定位技能、共享运行环境与启动 CLI |
+| `.env.example`、`mineru.json.template` | 用户全局 API 配置示例与已有模型路径模板，不是实际配置 |
+| `agents/openai.yaml` | 宿主发现技能时显示的名称与描述 |
+| `scripts/install_cli.py` | 源码发行的显式统一安装与升级，不进入技能包 |
 | `scripts/package_skill.py` | 按白名单打包技能 |
 | `src/local_read/cli.py` | 参数、状态摘要与退出码 |
-| `src/local_read/local_runtime.py` | 共享路径、运行环境标识、进程锁与离线防护 |
+| `src/local_read/local_runtime.py` | 统一安装与模型路径、进程锁及离线防护 |
+| `src/local_read/installation.py` | 只读安装来源、入口冲突与旧缓存诊断 |
 | `src/local_read/models.py` | 模型准备、配置与文件就绪检查 |
 | `src/local_read/processing.py` | 文档处理入口和结果组织 |
 | `src/local_read/orchestrator.py`、`segmenter/` | 页范围、章节、切片与合并 |
@@ -58,6 +64,8 @@ MinerU 是常规软件依赖，负责模型与深度 PDF 解析；模型权重�
 
 测试与审计产物放在 `.local_read_mcp/`。验证全局缓存行为时，将路径覆盖到测试目录，避免修改真实用户模型和配置。依赖调整先隔离解析与验证，保留锁文件及其他正在进行的工作。
 
-修改命令、后端、目录或配置时同步更新 `SKILL.md`、`README.md`、`references/usage.md` 和本文件中的相关约定。`CLAUDE.md` 仅引用本文件，不维护另一套规则。文档描述当前行为，避免添加阶段总结、完成宣言或重复操作手册。Skill 保持精简，高级细节放在引用文档中。
+区分安装器 mock、最小包的真实 uv 安装、完整锁定依赖安装和真实模型推理。只有实际完成对应验证时才能报告该层通过。文档修改检查链接、CLI 参数与配置示例；不必为了文案改动重复运行模型或完整依赖安装。
 
-发布前运行 `make skill`，核对必要入口和引用文件。压缩包只能包含白名单文件，不能包含 `.env`、实际 `mineru.json`、模型、运行环境、测试输出或密钥。不要因普通代码修改自动下载模型、调用 API、提交 Git 或发布版本。
+修改命令、后端、目录或配置时同步更新 `SKILL.md`、`README.md`、`references/usage.md`、示例配置和本文件。README 面向安装使用者，SKILL 面向调用者，usage 记录选项与产物，本文件面向源码维护者。`CLAUDE.md` 引用本文件，不维护另一套规则。文档描述当前行为，避免添加阶段总结或重复手册。Skill 保持精简，高级细节放在引用文档中。
+
+发布前运行 `make skill`，核对必要说明和引用文件。压缩包只能包含文档白名单与宿主元数据，不能包含程序源码、安装器、依赖文件、`.env`、实际 `mineru.json`、模型、运行环境、测试输出或密钥。不要因普通代码修改自动改动用户的真实安装、下载模型、调用 API、提交 Git 或发布版本。

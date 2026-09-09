@@ -10,18 +10,9 @@
             "right": "$"
         }
     },
-    "llm-aided-config": {
-        "title_aided": {
-            "api_key": "",
-            "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-            "model": "qwen3.5-plus",
-            "enable_thinking": false,
-            "enable": false
-        }
-    },
     "models-dir": {
-        "pipeline": "models/pipeline",
-        "vlm": "models/vlm"
+        "pipeline": "/absolute/path/to/existing/pipeline-models",
+        "vlm": "/absolute/path/to/existing/vlm-models"
     },
     "config_version": "1.3.1"
 }
